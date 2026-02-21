@@ -1,0 +1,132 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI-IoT Thermal Twin 3D</title>
+    <link rel="stylesheet" href="/twin3d/styles.css" />
+  </head>
+  <body>
+    <div id="app-shell">
+      <section id="viewport">
+        <canvas id="twin-canvas"></canvas>
+        <div id="connection-pill" class="offline">WS disconnected</div>
+      </section>
+
+      <aside id="side-panel">
+        <header class="panel-card hero">
+          <p class="eyebrow">AI-IoT Product Twin</p>
+          <h1>Cooperative Cooling Digital Twin</h1>
+          <p>8 racks, emissive thermal map, global cooperative state, anomaly highlight.</p>
+        </header>
+
+        <section class="panel-card hero-kpi">
+          <span>Cluster Thermal State</span>
+          <div class="hero-kpi-main">
+            <strong id="kpi-hero">--</strong>
+            <svg id="kpi-hero-sparkline" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+              <polyline id="kpi-hero-sparkline-line" points=""></polyline>
+            </svg>
+          </div>
+          <small id="kpi-hero-sub">Trend: --&deg;C/min</small>
+        </section>
+
+        <section class="panel-card grid-kpi">
+          <article>
+            <span>Global Avg</span>
+            <strong id="kpi-avg">--</strong>
+          </article>
+          <article>
+            <span>Global Max</span>
+            <strong id="kpi-max">--</strong>
+          </article>
+          <article>
+            <span>Critical Rack</span>
+            <strong id="kpi-critical">--</strong>
+          </article>
+          <article>
+            <span>Total Cooling Power</span>
+            <strong id="kpi-power">--</strong>
+            <small id="kpi-power-delta">--</small>
+          </article>
+        </section>
+
+        <section class="panel-card ai-card">
+          <h2>AI Monitor</h2>
+          <div class="ai-row">
+            <span>Status</span>
+            <strong id="kpi-ai-status" class="status-pill neutral">--</strong>
+          </div>
+          <div class="ai-row">
+            <span>Confidence</span>
+            <strong id="kpi-ai-confidence">--</strong>
+          </div>
+          <div class="ai-row">
+            <span>Trend</span>
+            <strong id="kpi-trend">--</strong>
+          </div>
+          <div class="ai-row">
+            <span>Prediction (5 min)</span>
+            <strong id="kpi-predict5">--</strong>
+          </div>
+          <div class="ai-row">
+            <span>Anomaly risk</span>
+            <strong id="kpi-ai-risk">--</strong>
+          </div>
+        </section>
+
+        <section class="panel-card ai-card">
+          <h2>CDU Plant</h2>
+          <div class="ai-row">
+            <span>Status</span>
+            <strong id="kpi-cdu-status" class="status-pill neutral">--</strong>
+          </div>
+          <div class="ai-row">
+            <span>Supply A</span>
+            <strong id="kpi-supply-a">--</strong>
+          </div>
+          <div class="ai-row">
+            <span>Supply B</span>
+            <strong id="kpi-supply-b">--</strong>
+          </div>
+          <div class="ai-row">
+            <span>Fan A / Fan B</span>
+            <strong id="kpi-cdu-fans">--</strong>
+          </div>
+        </section>
+
+        <section class="panel-card legend-wrap">
+          <h2>Thermal Legend</h2>
+          <div class="legend-gradient"></div>
+          <div class="legend-labels">
+            <span>30&deg;C</span>
+            <span>45&deg;C</span>
+            <span>60&deg;C</span>
+            <span>75&deg;C+</span>
+          </div>
+        </section>
+
+        <section class="panel-card">
+          <h2>Rack State</h2>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Rack</th>
+                  <th>Status</th>
+                  <th>Hot &deg;C</th>
+                  <th>Thermal</th>
+                  <th>Fan</th>
+                  <th>Pump</th>
+                  <th>Mode</th>
+                </tr>
+              </thead>
+              <tbody id="rack-table"></tbody>
+            </table>
+          </div>
+        </section>
+      </aside>
+    </div>
+    <script type="module" src="/twin3d/main.js"></script>
+  </body>
+</html>

@@ -1,123 +1,105 @@
-# AI-IoT Cooperative Cooling (Simulated Liquid)
+# AI-IoT - Hierarchical Cooperative Cooling Twin
 
-Software stack for a 2-node cooperative cooling project:
+Arquitetura final suportada:
 
-- Node A: ESP32 + W5500
-- Node B: RP2040 + W5500
-- Cooperative TCP server in Python
-- AI anomaly detection (`zscore` default, optional `IsolationForest`)
-- Thermal model with virtual pump/flow (no real water required)
+- `2` racks reais: `R00` e `R07` (`ESP32-DEVKITC-V4`)
+- `6` racks virtuais estimadas no servidor (`2x4`)
+- `1` CDU (`ESP32-C6`) com duas zonas (`fanA`, `fanB`)
+- servidor central (`server.py`) com modelo térmico zonal + AI + setpoints
+- frontend 3D único em `twin3d/`
 
-## 1. Folder structure
+## BOM mínimo alvo
+
+- `2x` ESP32-DEVKITC-V4 (racks)
+- `1x` ESP32-C6 DevKitC-1 (CDU)
+- `2x` DS18B20 (1 por rack)
+- `2x` resistência `12V 20W` (1 por rack)
+- `2x` módulo IRF520 (heater low-side)
+- `2x` fan module DFR0332 (CDU zona A/B)
+- `1x` fonte `12V 5A`
+
+Nota de segurança: o heater usa `time-proportioning` com janela de `2s` (`HEAT_WINDOW_MS=2000`), não PWM rápido.
+
+## Topologia runtime
 
 ```text
-AI-IoT/
-  include/
-    ProjectConfig.h
-  lib/
-    sensors/
-    control/
-    network/
-    protocol/
-  src/
-    main.cpp
-  tools/
-    node_simulator.py
-  platformio.ini
-  server.py
-  requirements.txt
+R00 / R07 (Wi-Fi WS) ----\
+                          +--> server.py (estado global + AI + controlo)
+CDU ESP32-C6 (Wi-Fi WS) --/
+
+server.py -> HTTP 8080 + WS twin 8000 + WS edge 8765 + TCP edge 5000
 ```
 
-## 2. Firmware environments
+## Endpoints
 
-- `node_a_esp32`: ESP32 node A
-- `node_b_pico`: RP2040 node B
+- `TCP edge`: `5000`
+- `WS twin (dashboard)`: `8000`
+- `WS edge (firmware)`: `8765`
+- `HTTP UI/API`: `8080`
 
-Compile:
+## Correr servidor
 
 ```bash
-C:\Users\msmig\.platformio\penv\Scripts\platformio.exe run -e node_a_esp32
-C:\Users\msmig\.platformio\penv\Scripts\platformio.exe run -e node_b_pico
+python server.py --host 0.0.0.0 --port 5000 --ui-port 8080 --ws-port 8000 --edge-ws-port 8765 --detector zscore
+```
+
+Abrir dashboard:
+
+```text
+http://127.0.0.1:8080/twin3d/index.html
+```
+
+## Teste sem hardware
+
+```bash
+python tools/node_simulator.py --host 127.0.0.1 --port 5000 --duration 180 --interval 1 --inject-anomaly-after 45
+```
+
+## Targets PlatformIO
+
+- `rack_r00` (`ESP32-DEVKITC-V4`, rack `R00`)
+- `rack_r07` (`ESP32-DEVKITC-V4`, rack `R07`)
+- `cdu_esp32c6` (`ESP32-C6`, `CDU1`)
+
+Build:
+
+```bash
+platformio run -e rack_r00
+platformio run -e rack_r07
+```
+
+For `ESP32-C6` use an isolated packages cache (avoids package conflicts with ESP32 legacy toolchain):
+
+```powershell
+$env:PLATFORMIO_PACKAGES_DIR = "$PWD\\.pio-cdu-packages"
+platformio run -e cdu_esp32c6
+```
+
+Or run:
+
+```powershell
+.\tools\cdu_build.ps1
 ```
 
 Upload:
 
 ```bash
-C:\Users\msmig\.platformio\penv\Scripts\platformio.exe run -e node_a_esp32 -t upload
-C:\Users\msmig\.platformio\penv\Scripts\platformio.exe run -e node_b_pico -t upload
+platformio run -e rack_r00 -t upload
+platformio run -e rack_r07 -t upload
+$env:PLATFORMIO_PACKAGES_DIR = "$PWD\\.pio-cdu-packages"; platformio run -e cdu_esp32c6 -t upload
 ```
 
-Monitor:
+Or:
 
-```bash
-C:\Users\msmig\.platformio\penv\Scripts\platformio.exe device monitor -b 115200
+```powershell
+.\tools\cdu_build.ps1 upload
 ```
 
-## 3. Software-only validation (before hardware)
+## Configuração obrigatória
 
-Install server dependencies:
+Editar `platformio.ini`:
 
-```bash
-python -m pip install -r requirements.txt
-```
-
-Start server (recommended stable mode):
-
-```bash
-python server.py --host 0.0.0.0 --port 5000 --detector zscore
-```
-
-Optional ML mode:
-
-```bash
-python server.py --host 0.0.0.0 --port 5000 --detector iforest
-```
-
-Run 2-node simulator in another terminal:
-
-```bash
-python tools/node_simulator.py --host 127.0.0.1 --port 5000 --duration 120 --inject-anomaly-after 45
-```
-
-Expected behavior:
-
-- both virtual nodes send telemetry each second
-- server computes global average and returns cooperative setpoints
-- after anomaly injection in node B, detector should flag anomaly and force high cooling command
-
-CSV logs are written to `logs/telemetry_log.csv`.
-
-## 4. Node FSM
-
-Implemented states in `src/main.cpp`:
-
-- `INIT`
-- `READ_SENSORS`
-- `CONTROL_LOCAL`
-- `SEND_DATA`
-- `WAIT_SERVER`
-- `APPLY_COMMAND`
-- `WAIT_NEXT`
-
-No long blocking delays are used in loop scheduling.
-
-## 5. Virtual liquid model
-
-In `lib/sensors/src/Sensors.cpp`, cooling is simulated with:
-
-- `virtual_flow = pump_pwm / 255.0`
-- fan and virtual flow impact hot/liquid thermal dynamics
-- optional DS18B20 real reading fallback exists when `SIMULATED_COOLING=0`
-
-## 6. Main parameters to tune
-
-Edit `platformio.ini` build flags:
-
-- network: `SERVER_IP_*`, `SERVER_PORT`, `DEVICE_IP_4`
-- cycle timing: `CYCLE_INTERVAL_MS`, `NETWORK_TIMEOUT_MS`, `REMOTE_CMD_TTL_MS`
-- thermal model: `HEAT_GAIN_C_PER_SEC`, `HOT_TO_LIQUID_COEFF`, `FLOW_COOLING_COEFF`, etc.
-- mode: `SIMULATED_COOLING=1` (current default)
-
-## 7. Suggested next step for hardware phase
-
-Set `SIMULATED_COOLING=0` per environment once DS18B20 and MOSFET outputs are wired and validated.
+- `WIFI_SSID`
+- `WIFI_PASSWORD`
+- `SERVER_HOST` (IP do PC com `server.py`)
+- pinos conforme a tua cablagem (`ONE_WIRE_PIN`, `HEAT_PIN`, `CDU_FAN_A_PIN`, `CDU_FAN_B_PIN`, etc.)

@@ -1,127 +1,58 @@
 #pragma once
 
 #include <Arduino.h>
-#include <IPAddress.h>
+
+#ifndef DEVICE_ROLE
+#define DEVICE_ROLE 1
+#endif
+
+#define ROLE_RACK 1
+#define ROLE_CDU 2
 
 #ifndef NODE_ID
 #define NODE_ID "A"
+#endif
+
+#ifndef RACK_ID
+#define RACK_ID "R00"
 #endif
 
 #ifndef DEVICE_NAME
 #define DEVICE_NAME "AI_COOLING_NODE"
 #endif
 
-#ifndef DEVICE_IP_4
-#define DEVICE_IP_4 100
+#ifndef CDU_ID
+#define CDU_ID "CDU1"
 #endif
 
-#ifndef SERVER_IP_1
-#define SERVER_IP_1 192
-#endif
-#ifndef SERVER_IP_2
-#define SERVER_IP_2 168
-#endif
-#ifndef SERVER_IP_3
-#define SERVER_IP_3 1
-#endif
-#ifndef SERVER_IP_4
-#define SERVER_IP_4 10
+#ifndef WIFI_SSID
+#define WIFI_SSID "CHANGE_ME_SSID"
 #endif
 
-#ifndef SERVER_PORT
-#define SERVER_PORT 5000
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD "CHANGE_ME_PASS"
 #endif
 
-#ifndef NETWORK_SUBNET_1
-#define NETWORK_SUBNET_1 255
-#endif
-#ifndef NETWORK_SUBNET_2
-#define NETWORK_SUBNET_2 255
-#endif
-#ifndef NETWORK_SUBNET_3
-#define NETWORK_SUBNET_3 255
-#endif
-#ifndef NETWORK_SUBNET_4
-#define NETWORK_SUBNET_4 0
+#ifndef SERVER_HOST
+#define SERVER_HOST "192.168.1.10"
 #endif
 
-#ifndef NETWORK_GATEWAY_1
-#define NETWORK_GATEWAY_1 192
-#endif
-#ifndef NETWORK_GATEWAY_2
-#define NETWORK_GATEWAY_2 168
-#endif
-#ifndef NETWORK_GATEWAY_3
-#define NETWORK_GATEWAY_3 1
-#endif
-#ifndef NETWORK_GATEWAY_4
-#define NETWORK_GATEWAY_4 1
+#ifndef EDGE_WS_PORT
+#define EDGE_WS_PORT 8765
 #endif
 
-#ifndef NETWORK_DNS_1
-#define NETWORK_DNS_1 8
-#endif
-#ifndef NETWORK_DNS_2
-#define NETWORK_DNS_2 8
-#endif
-#ifndef NETWORK_DNS_3
-#define NETWORK_DNS_3 8
-#endif
-#ifndef NETWORK_DNS_4
-#define NETWORK_DNS_4 8
-#endif
-
-#ifndef MAC_1
-#define MAC_1 0xDE
-#endif
-#ifndef MAC_2
-#define MAC_2 0xAD
-#endif
-#ifndef MAC_3
-#define MAC_3 0xBE
-#endif
-#ifndef MAC_4
-#define MAC_4 0xEF
-#endif
-#ifndef MAC_5
-#define MAC_5 0xFE
-#endif
-#ifndef MAC_6
-#define MAC_6 0x01
-#endif
-
-#ifndef W5500_CS_PIN
-#define W5500_CS_PIN 5
-#endif
-#ifndef W5500_RESET_PIN
-#define W5500_RESET_PIN 4
-#endif
-#ifndef W5500_SCK_PIN
-#define W5500_SCK_PIN 18
-#endif
-#ifndef W5500_MISO_PIN
-#define W5500_MISO_PIN 19
-#endif
-#ifndef W5500_MOSI_PIN
-#define W5500_MOSI_PIN 23
-#endif
-
-#ifndef ONE_WIRE_PIN
-#define ONE_WIRE_PIN 14
-#endif
-#ifndef FAN_PIN
-#define FAN_PIN 17
-#endif
-#ifndef PUMP_PIN
-#define PUMP_PIN 16
+#ifndef EDGE_WS_PATH
+#define EDGE_WS_PATH "/"
 #endif
 
 #ifndef CYCLE_INTERVAL_MS
 #define CYCLE_INTERVAL_MS 1000
 #endif
+
 #ifndef NETWORK_TIMEOUT_MS
-#define NETWORK_TIMEOUT_MS 1300
+#define NETWORK_TIMEOUT_MS 1500
 #endif
+
 #ifndef REMOTE_CMD_TTL_MS
 #define REMOTE_CMD_TTL_MS 5000
 #endif
@@ -161,24 +92,42 @@
 #ifndef CRITICAL_TEMP_C
 #define CRITICAL_TEMP_C 88
 #endif
+#ifndef HEAT_WINDOW_MS
+#define HEAT_WINDOW_MS 2000
+#endif
 
-struct NodeConfig {
+#ifndef ONE_WIRE_PIN
+#define ONE_WIRE_PIN 14
+#endif
+#ifndef FAN_PIN
+#define FAN_PIN 17
+#endif
+#ifndef HEAT_PIN
+#define HEAT_PIN 18
+#endif
+#ifndef PUMP_PIN
+#define PUMP_PIN 16
+#endif
+
+#ifndef CDU_FAN_A_PIN
+#define CDU_FAN_A_PIN 10
+#endif
+#ifndef CDU_FAN_B_PIN
+#define CDU_FAN_B_PIN 11
+#endif
+
+struct RackNodeConfig {
   const char* nodeId;
+  const char* rackId;
   const char* deviceName;
-  uint8_t mac[6];
-  IPAddress ip;
-  IPAddress dns;
-  IPAddress gateway;
-  IPAddress subnet;
-  IPAddress serverIp;
-  uint16_t serverPort;
-  uint8_t csPin;
-  uint8_t resetPin;
-  uint8_t sckPin;
-  uint8_t misoPin;
-  uint8_t mosiPin;
+  const char* wifiSsid;
+  const char* wifiPassword;
+  const char* serverHost;
+  uint16_t edgeWsPort;
+  const char* edgeWsPath;
   uint8_t oneWirePin;
   uint8_t fanPin;
+  uint8_t heatPin;
   uint8_t pumpPin;
   uint32_t cycleIntervalMs;
   uint32_t networkTimeoutMs;
@@ -194,33 +143,22 @@ struct NodeConfig {
   float flowCoolingCoeff;
   float anomalyTempC;
   float criticalTempC;
+  uint16_t heatWindowMs;
 };
 
-inline NodeConfig loadNodeConfig() {
-  NodeConfig cfg{};
+inline RackNodeConfig loadRackConfig() {
+  RackNodeConfig cfg{};
   cfg.nodeId = NODE_ID;
+  cfg.rackId = RACK_ID;
   cfg.deviceName = DEVICE_NAME;
-  cfg.mac[0] = static_cast<uint8_t>(MAC_1);
-  cfg.mac[1] = static_cast<uint8_t>(MAC_2);
-  cfg.mac[2] = static_cast<uint8_t>(MAC_3);
-  cfg.mac[3] = static_cast<uint8_t>(MAC_4);
-  cfg.mac[4] = static_cast<uint8_t>(MAC_5);
-  cfg.mac[5] = static_cast<uint8_t>(MAC_6);
-  cfg.ip = IPAddress(192, 168, 1, DEVICE_IP_4);
-  cfg.dns = IPAddress(NETWORK_DNS_1, NETWORK_DNS_2, NETWORK_DNS_3, NETWORK_DNS_4);
-  cfg.gateway =
-      IPAddress(NETWORK_GATEWAY_1, NETWORK_GATEWAY_2, NETWORK_GATEWAY_3, NETWORK_GATEWAY_4);
-  cfg.subnet =
-      IPAddress(NETWORK_SUBNET_1, NETWORK_SUBNET_2, NETWORK_SUBNET_3, NETWORK_SUBNET_4);
-  cfg.serverIp = IPAddress(SERVER_IP_1, SERVER_IP_2, SERVER_IP_3, SERVER_IP_4);
-  cfg.serverPort = static_cast<uint16_t>(SERVER_PORT);
-  cfg.csPin = static_cast<uint8_t>(W5500_CS_PIN);
-  cfg.resetPin = static_cast<uint8_t>(W5500_RESET_PIN);
-  cfg.sckPin = static_cast<uint8_t>(W5500_SCK_PIN);
-  cfg.misoPin = static_cast<uint8_t>(W5500_MISO_PIN);
-  cfg.mosiPin = static_cast<uint8_t>(W5500_MOSI_PIN);
+  cfg.wifiSsid = WIFI_SSID;
+  cfg.wifiPassword = WIFI_PASSWORD;
+  cfg.serverHost = SERVER_HOST;
+  cfg.edgeWsPort = static_cast<uint16_t>(EDGE_WS_PORT);
+  cfg.edgeWsPath = EDGE_WS_PATH;
   cfg.oneWirePin = static_cast<uint8_t>(ONE_WIRE_PIN);
   cfg.fanPin = static_cast<uint8_t>(FAN_PIN);
+  cfg.heatPin = static_cast<uint8_t>(HEAT_PIN);
   cfg.pumpPin = static_cast<uint8_t>(PUMP_PIN);
   cfg.cycleIntervalMs = static_cast<uint32_t>(CYCLE_INTERVAL_MS);
   cfg.networkTimeoutMs = static_cast<uint32_t>(NETWORK_TIMEOUT_MS);
@@ -236,5 +174,38 @@ inline NodeConfig loadNodeConfig() {
   cfg.flowCoolingCoeff = static_cast<float>(FLOW_COOLING_COEFF);
   cfg.anomalyTempC = static_cast<float>(ANOMALY_TEMP_C);
   cfg.criticalTempC = static_cast<float>(CRITICAL_TEMP_C);
+  cfg.heatWindowMs = static_cast<uint16_t>(HEAT_WINDOW_MS);
+  return cfg;
+}
+
+struct CduConfig {
+  const char* cduId;
+  const char* deviceName;
+  const char* wifiSsid;
+  const char* wifiPassword;
+  const char* serverHost;
+  uint16_t edgeWsPort;
+  const char* edgeWsPath;
+  uint8_t fanAPin;
+  uint8_t fanBPin;
+  uint32_t cycleIntervalMs;
+  uint32_t networkTimeoutMs;
+  uint32_t remoteCmdTtlMs;
+};
+
+inline CduConfig loadCduConfig() {
+  CduConfig cfg{};
+  cfg.cduId = CDU_ID;
+  cfg.deviceName = DEVICE_NAME;
+  cfg.wifiSsid = WIFI_SSID;
+  cfg.wifiPassword = WIFI_PASSWORD;
+  cfg.serverHost = SERVER_HOST;
+  cfg.edgeWsPort = static_cast<uint16_t>(EDGE_WS_PORT);
+  cfg.edgeWsPath = EDGE_WS_PATH;
+  cfg.fanAPin = static_cast<uint8_t>(CDU_FAN_A_PIN);
+  cfg.fanBPin = static_cast<uint8_t>(CDU_FAN_B_PIN);
+  cfg.cycleIntervalMs = static_cast<uint32_t>(CYCLE_INTERVAL_MS);
+  cfg.networkTimeoutMs = static_cast<uint32_t>(NETWORK_TIMEOUT_MS);
+  cfg.remoteCmdTtlMs = static_cast<uint32_t>(REMOTE_CMD_TTL_MS);
   return cfg;
 }

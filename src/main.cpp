@@ -1,11 +1,29 @@
 #include <Arduino.h>
 
-#include "Control.h"
-#include "Network.h"
+#include "EdgeNetwork.h"
 #include "ProjectConfig.h"
 #include "Protocol.h"
-#include "Sensors.h"
 
+#if DEVICE_ROLE == ROLE_RACK
+#include "Control.h"
+#include "Sensors.h"
+#endif
+
+namespace {
+uint8_t rampPwm(uint8_t current, uint8_t target, uint8_t step = 5) {
+  if (current < target) {
+    const int next = current + step;
+    return static_cast<uint8_t>(next > target ? target : next);
+  }
+  if (current > target) {
+    const int next = current - step;
+    return static_cast<uint8_t>(next < target ? target : next);
+  }
+  return current;
+}
+}  // namespace
+
+#if DEVICE_ROLE == ROLE_RACK
 namespace {
 enum class NodeState : uint8_t {
   INIT,
@@ -17,9 +35,9 @@ enum class NodeState : uint8_t {
   WAIT_NEXT
 };
 
-NodeConfig gConfig = loadNodeConfig();
+RackNodeConfig gConfig = loadRackConfig();
 
-SensorManager::Config makeSensorConfig(const NodeConfig& cfg) {
+SensorManager::Config makeSensorConfig(const RackNodeConfig& cfg) {
   SensorManager::Config out{};
   out.oneWirePin = cfg.oneWirePin;
   out.simulationMode = cfg.simulatedCooling;
@@ -34,47 +52,41 @@ SensorManager::Config makeSensorConfig(const NodeConfig& cfg) {
   return out;
 }
 
-ControlManager::Config makeControlConfig(const NodeConfig& cfg) {
+ControlManager::Config makeControlConfig(const RackNodeConfig& cfg) {
   ControlManager::Config out{};
   out.fanPin = cfg.fanPin;
+  out.heatPin = cfg.heatPin;
   out.pumpPin = cfg.pumpPin;
   out.minFanPwm = 70;
   out.maxFanPwm = 255;
+  out.minHeatPwm = 0;
+  out.maxHeatPwm = 255;
   out.minPumpPwm = 60;
   out.maxPumpPwm = 255;
   out.remoteTtlMs = cfg.remoteCmdTtlMs;
   out.anomalyTempC = cfg.anomalyTempC;
   out.criticalTempC = cfg.criticalTempC;
   out.maxRiseRateCPerSec = 5.0f;
+  out.heatWindowMs = cfg.heatWindowMs;
   return out;
 }
 
-NetworkManager::Config makeNetworkConfig(const NodeConfig& cfg) {
-  NetworkManager::Config out{};
-  for (uint8_t i = 0; i < 6; ++i) {
-    out.mac[i] = cfg.mac[i];
-  }
-  out.ip = cfg.ip;
-  out.dns = cfg.dns;
-  out.gateway = cfg.gateway;
-  out.subnet = cfg.subnet;
-  out.serverIp = cfg.serverIp;
-  out.serverPort = cfg.serverPort;
-  out.csPin = cfg.csPin;
-  out.resetPin = cfg.resetPin;
-  out.sckPin = cfg.sckPin;
-  out.misoPin = cfg.misoPin;
-  out.mosiPin = cfg.mosiPin;
+EdgeNetworkManager::Config makeNetworkConfig(const RackNodeConfig& cfg) {
+  EdgeNetworkManager::Config out{};
+  out.wifiSsid = cfg.wifiSsid;
+  out.wifiPassword = cfg.wifiPassword;
+  out.serverHost = cfg.serverHost;
+  out.edgeWsPort = cfg.edgeWsPort;
+  out.edgeWsPath = cfg.edgeWsPath;
   out.responseTimeoutMs = cfg.networkTimeoutMs;
   return out;
 }
 
 SensorManager gSensors(makeSensorConfig(gConfig));
 ControlManager gControl(makeControlConfig(gConfig));
-NetworkManager gNetwork(makeNetworkConfig(gConfig));
+EdgeNetworkManager gNetwork(makeNetworkConfig(gConfig));
 
 NodeState gState = NodeState::INIT;
-uint32_t gStateEnteredMs = 0;
 uint32_t gCycleStartedMs = 0;
 uint32_t gCycleCounter = 0;
 uint32_t gAckCounter = 0;
@@ -84,62 +96,30 @@ uint32_t gLastReportMs = 0;
 
 SensorReadout gLastSensor{};
 ControlManager::Actuation gLastActuation{};
-CommandMessage gLastCommand{};
+RackCommandMessage gLastCommand{};
 
 String gPayload;
 String gResponse;
 bool gNetworkOk = false;
 bool gCommandFresh = false;
+bool gControlReady = false;
 
-const char* stateName(NodeState state) {
-  switch (state) {
-    case NodeState::INIT:
-      return "INIT";
-    case NodeState::READ_SENSORS:
-      return "READ_SENSORS";
-    case NodeState::CONTROL_LOCAL:
-      return "CONTROL_LOCAL";
-    case NodeState::SEND_DATA:
-      return "SEND_DATA";
-    case NodeState::WAIT_SERVER:
-      return "WAIT_SERVER";
-    case NodeState::APPLY_COMMAND:
-      return "APPLY_COMMAND";
-    case NodeState::WAIT_NEXT:
-      return "WAIT_NEXT";
-    default:
-      return "UNKNOWN";
-  }
-}
-
-void transitionTo(NodeState next) {
-  if (gState == next) {
-    return;
-  }
-  Serial.print("[FSM] ");
-  Serial.print(stateName(gState));
-  Serial.print(" -> ");
-  Serial.println(stateName(next));
-  gState = next;
-  gStateEnteredMs = millis();
-}
+void transitionTo(NodeState next) { gState = next; }
 
 void printBootBanner() {
   Serial.println();
-  Serial.println("=== AI-IoT Cooperative Cooling Node ===");
+  Serial.println("=== AI-IoT Rack Node ===");
   Serial.print("Node: ");
   Serial.println(gConfig.nodeId);
-  Serial.print("Device: ");
-  Serial.println(gConfig.deviceName);
-  Serial.print("IP: ");
-  Serial.println(gConfig.ip);
-  Serial.print("Server: ");
-  Serial.print(gConfig.serverIp);
+  Serial.print("Rack ID: ");
+  Serial.println(gConfig.rackId);
+  Serial.print("Host: ");
+  Serial.print(gConfig.serverHost);
   Serial.print(":");
-  Serial.println(gConfig.serverPort);
+  Serial.println(gConfig.edgeWsPort);
   Serial.print("Cooling mode: ");
   Serial.println(gConfig.simulatedCooling ? "SIMULATED" : "DS18B20");
-  Serial.println("=======================================");
+  Serial.println("========================");
 }
 
 void printPeriodicReport(uint32_t nowMs) {
@@ -147,7 +127,6 @@ void printPeriodicReport(uint32_t nowMs) {
     return;
   }
   gLastReportMs = nowMs;
-
   Serial.print("[STAT] cycle=");
   Serial.print(gCycleCounter);
   Serial.print(" t_hot=");
@@ -156,6 +135,8 @@ void printPeriodicReport(uint32_t nowMs) {
   Serial.print(gLastSensor.tLiquidC, 2);
   Serial.print(" fan=");
   Serial.print(gLastActuation.fanPwm);
+  Serial.print(" heat=");
+  Serial.print(gLastActuation.heatPwm);
   Serial.print(" pump=");
   Serial.print(gLastActuation.pumpPwm);
   Serial.print(" ack=");
@@ -179,41 +160,42 @@ void setup() {
 
 void loop() {
   const uint32_t nowMs = millis();
+  if (gControlReady) {
+    gControl.service(nowMs);
+  }
 
   switch (gState) {
-    case NodeState::INIT: {
+    case NodeState::INIT:
       gSensors.begin();
       gControl.begin();
+      gControlReady = true;
       gNetwork.begin();
       gCycleStartedMs = nowMs;
       transitionTo(NodeState::READ_SENSORS);
       break;
-    }
 
     case NodeState::READ_SENSORS:
-      gLastSensor = gSensors.update(nowMs, gControl.fanPwm(), gControl.pumpPwm());
+      gLastSensor =
+          gSensors.update(nowMs, gControl.fanPwm(), gControl.heatPwm(), gControl.pumpPwm());
       transitionTo(NodeState::CONTROL_LOCAL);
       break;
 
     case NodeState::CONTROL_LOCAL: {
       gLastActuation =
           gControl.compute(gLastSensor.tHotC, gLastSensor.tLiquidC, gLastSensor.sensorOk, nowMs);
-      gControl.apply(gLastActuation);
+      gControl.apply(gLastActuation, nowMs);
 
-      TelemetryMessage telemetry{};
-      telemetry.nodeId = gConfig.nodeId;
-      telemetry.cycle = gCycleCounter;
-      telemetry.uptimeMs = nowMs;
+      RackTelemetryMessage telemetry{};
+      telemetry.rackId = gConfig.rackId;
       telemetry.tHotC = gLastSensor.tHotC;
       telemetry.tLiquidC = gLastSensor.tLiquidC;
-      telemetry.fanPwm = gLastActuation.fanPwm;
-      telemetry.pumpPwm = gLastActuation.pumpPwm;
-      telemetry.virtualFlow = gLastSensor.virtualFlow;
-      telemetry.sensorOk = gLastSensor.sensorOk;
-      telemetry.simulationMode = gConfig.simulatedCooling;
+      telemetry.fanLocalPwm = gLastActuation.fanPwm;
+      telemetry.heatPwm = gLastActuation.heatPwm;
+      telemetry.pumpV = gLastActuation.pumpPwm;
+      telemetry.rssi = gNetwork.rssi();
       telemetry.localAnomaly = gLastActuation.localAnomaly;
-      telemetry.networkOk = gNetworkOk;
-      gPayload = encodeTelemetryJson(telemetry);
+      telemetry.tsMs = nowMs;
+      gPayload = encodeRackTelemetryJson(telemetry);
 
       transitionTo(NodeState::SEND_DATA);
       break;
@@ -231,13 +213,14 @@ void loop() {
       break;
 
     case NodeState::WAIT_SERVER: {
-      NetworkManager::PollStatus poll = gNetwork.pollResponse(gResponse);
-      if (poll == NetworkManager::PollStatus::PENDING) {
+      EdgeNetworkManager::PollStatus poll = gNetwork.pollResponse(gResponse);
+      if (poll == EdgeNetworkManager::PollStatus::PENDING) {
         break;
       }
-      if (poll == NetworkManager::PollStatus::COMPLETED) {
-        CommandMessage cmd{};
-        if (decodeCommandJson(gResponse, cmd)) {
+
+      if (poll == EdgeNetworkManager::PollStatus::COMPLETED) {
+        RackCommandMessage cmd{};
+        if (decodeRackCommandJson(gResponse, cmd)) {
           gLastCommand = cmd;
           gCommandFresh = true;
           gAckCounter++;
@@ -246,7 +229,7 @@ void loop() {
           gFailureCounter++;
           gNetworkOk = false;
         }
-      } else if (poll == NetworkManager::PollStatus::TIMEOUT) {
+      } else if (poll == EdgeNetworkManager::PollStatus::TIMEOUT) {
         gTimeoutCounter++;
         gNetworkOk = false;
       } else {
@@ -261,8 +244,9 @@ void loop() {
       if (gCommandFresh && gLastCommand.valid) {
         ControlManager::RemoteSetpoints remote{};
         remote.valid = true;
-        remote.fanPwm = gLastCommand.targetFanPwm;
-        remote.pumpPwm = gLastCommand.targetPumpPwm;
+        remote.fanPwm = gLastCommand.fanLocalPwm;
+        remote.heatPwm = gLastCommand.heatPwm;
+        remote.pumpPwm = gLastCommand.pumpV;
         remote.anomaly = gLastCommand.anomaly;
         gControl.setRemoteSetpoints(remote, nowMs);
       }
@@ -280,3 +264,143 @@ void loop() {
 
   printPeriodicReport(nowMs);
 }
+
+#else
+namespace {
+enum class CduStateFsm : uint8_t { INIT, SEND_DATA, WAIT_SERVER, APPLY_CMD, WAIT_NEXT };
+
+CduConfig gConfig = loadCduConfig();
+EdgeNetworkManager gNetwork({gConfig.wifiSsid, gConfig.wifiPassword, gConfig.serverHost,
+                             gConfig.edgeWsPort, gConfig.edgeWsPath, gConfig.networkTimeoutMs});
+
+CduStateFsm gState = CduStateFsm::INIT;
+uint32_t gCycleStartedMs = 0;
+uint32_t gLastCmdMs = 0;
+uint32_t gLastLoopMs = 0;
+uint32_t gCycleCounter = 0;
+
+uint8_t gFanACurrent = 160;
+uint8_t gFanBCurrent = 160;
+uint8_t gFanATarget = 160;
+uint8_t gFanBTarget = 160;
+float gSupplyA = 29.0f;
+float gSupplyB = 30.0f;
+float gSupplyTarget = 29.5f;
+
+String gPayload;
+String gResponse;
+CduCommandMessage gLastCommand{};
+
+void applyFans() {
+  gFanACurrent = rampPwm(gFanACurrent, gFanATarget, 4);
+  gFanBCurrent = rampPwm(gFanBCurrent, gFanBTarget, 4);
+  analogWrite(gConfig.fanAPin, gFanACurrent);
+  analogWrite(gConfig.fanBPin, gFanBCurrent);
+}
+
+void updateVirtualSupply(float dtSec) {
+  const float coolA = (static_cast<float>(gFanACurrent) / 255.0f) * 1.8f;
+  const float coolB = (static_cast<float>(gFanBCurrent) / 255.0f) * 1.8f;
+  const float loadA = 1.3f;
+  const float loadB = 1.3f;
+
+  gSupplyA += (loadA - coolA) * 0.12f * dtSec;
+  gSupplyB += (loadB - coolB) * 0.12f * dtSec;
+  gSupplyA = constrain(gSupplyA, 22.0f, 45.0f);
+  gSupplyB = constrain(gSupplyB, 22.0f, 45.0f);
+}
+
+void applyFallbackIfStale(uint32_t nowMs) {
+  if (nowMs - gLastCmdMs <= gConfig.remoteCmdTtlMs) {
+    return;
+  }
+  const float avgSupply = (gSupplyA + gSupplyB) * 0.5f;
+  const float err = avgSupply - gSupplyTarget;
+  const int correction = static_cast<int>(err * 15.0f);
+  gFanATarget = static_cast<uint8_t>(constrain(160 + correction, 120, 220));
+  gFanBTarget = static_cast<uint8_t>(constrain(160 + correction, 120, 220));
+}
+}  // namespace
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(gConfig.fanAPin, OUTPUT);
+  pinMode(gConfig.fanBPin, OUTPUT);
+  analogWrite(gConfig.fanAPin, gFanACurrent);
+  analogWrite(gConfig.fanBPin, gFanBCurrent);
+  gNetwork.begin();
+  const uint32_t nowMs = millis();
+  gCycleStartedMs = nowMs;
+  gLastCmdMs = nowMs;
+  gLastLoopMs = nowMs;
+  Serial.println("=== AI-IoT CDU Controller ===");
+}
+
+void loop() {
+  const uint32_t nowMs = millis();
+  const float dtSec = static_cast<float>(max<int32_t>(1, nowMs - gLastLoopMs)) / 1000.0f;
+  gLastLoopMs = nowMs;
+  updateVirtualSupply(dtSec);
+  applyFallbackIfStale(nowMs);
+  applyFans();
+
+  switch (gState) {
+    case CduStateFsm::INIT:
+      gState = CduStateFsm::SEND_DATA;
+      break;
+
+    case CduStateFsm::SEND_DATA: {
+      CduTelemetryMessage telemetry{};
+      telemetry.cduId = gConfig.cduId;
+      telemetry.fanAPwm = gFanACurrent;
+      telemetry.fanBPwm = gFanBCurrent;
+      telemetry.tSupplyA = gSupplyA;
+      telemetry.tSupplyB = gSupplyB;
+      telemetry.tsMs = nowMs;
+      gPayload = encodeCduTelemetryJson(telemetry);
+
+      if (gNetwork.startRequest(gPayload)) {
+        gState = CduStateFsm::WAIT_SERVER;
+      } else {
+        gState = CduStateFsm::WAIT_NEXT;
+      }
+      break;
+    }
+
+    case CduStateFsm::WAIT_SERVER: {
+      EdgeNetworkManager::PollStatus poll = gNetwork.pollResponse(gResponse);
+      if (poll == EdgeNetworkManager::PollStatus::PENDING) {
+        break;
+      }
+      if (poll == EdgeNetworkManager::PollStatus::COMPLETED) {
+        CduCommandMessage cmd{};
+        if (decodeCduCommandJson(gResponse, cmd) && cmd.valid) {
+          gLastCommand = cmd;
+          gState = CduStateFsm::APPLY_CMD;
+        } else {
+          gState = CduStateFsm::WAIT_NEXT;
+        }
+      } else {
+        gState = CduStateFsm::WAIT_NEXT;
+      }
+      break;
+    }
+
+    case CduStateFsm::APPLY_CMD:
+      gFanATarget = gLastCommand.fanAPwm;
+      gFanBTarget = gLastCommand.fanBPwm;
+      gSupplyTarget = gLastCommand.tSupplyTarget;
+      gLastCmdMs = nowMs;
+      gState = CduStateFsm::WAIT_NEXT;
+      break;
+
+    case CduStateFsm::WAIT_NEXT:
+      if (nowMs - gCycleStartedMs >= gConfig.cycleIntervalMs) {
+        gCycleStartedMs = nowMs;
+        gCycleCounter++;
+        gState = CduStateFsm::SEND_DATA;
+      }
+      break;
+  }
+}
+#endif

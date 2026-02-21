@@ -29,12 +29,14 @@ class SensorManager {
   explicit SensorManager(const Config& config);
 
   void begin();
-  SensorReadout update(uint32_t nowMs, uint8_t fanPwm, uint8_t pumpPwm);
+  SensorReadout update(uint32_t nowMs, uint8_t fanPwm, uint8_t heatPwm, uint8_t pumpPwm);
   bool simulationMode() const;
 
  private:
-  SensorReadout updateSimulated(uint32_t nowMs, uint8_t fanPwm, uint8_t pumpPwm, bool sensorOkValue);
-  SensorReadout updateFromHardware(uint32_t nowMs, uint8_t fanPwm, uint8_t pumpPwm);
+  SensorReadout updateSimulated(uint32_t nowMs, uint8_t fanPwm, uint8_t heatPwm, uint8_t pumpPwm,
+                                bool sensorOkValue);
+  SensorReadout updateFromHardware(uint32_t nowMs, uint8_t fanPwm, uint8_t heatPwm,
+                                   uint8_t pumpPwm);
   bool validTemperature(float value) const;
   float clampFloat(float value, float minV, float maxV) const;
 
