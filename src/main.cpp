@@ -54,15 +54,9 @@ SensorManager::Config makeSensorConfig(const RackNodeConfig& cfg) {
 
 ControlManager::Config makeControlConfig(const RackNodeConfig& cfg) {
   ControlManager::Config out{};
-  out.fanPin = cfg.fanPin;
   out.heatPin = cfg.heatPin;
-  out.pumpPin = cfg.pumpPin;
-  out.minFanPwm = 70;
-  out.maxFanPwm = 255;
   out.minHeatPwm = 0;
   out.maxHeatPwm = 255;
-  out.minPumpPwm = 60;
-  out.maxPumpPwm = 255;
   out.remoteTtlMs = cfg.remoteCmdTtlMs;
   out.anomalyTempC = cfg.anomalyTempC;
   out.criticalTempC = cfg.criticalTempC;
@@ -133,12 +127,8 @@ void printPeriodicReport(uint32_t nowMs) {
   Serial.print(gLastSensor.tHotC, 2);
   Serial.print(" t_liquid=");
   Serial.print(gLastSensor.tLiquidC, 2);
-  Serial.print(" fan=");
-  Serial.print(gLastActuation.fanPwm);
   Serial.print(" heat=");
   Serial.print(gLastActuation.heatPwm);
-  Serial.print(" pump=");
-  Serial.print(gLastActuation.pumpPwm);
   Serial.print(" ack=");
   Serial.print(gAckCounter);
   Serial.print(" timeout=");
@@ -175,8 +165,7 @@ void loop() {
       break;
 
     case NodeState::READ_SENSORS:
-      gLastSensor =
-          gSensors.update(nowMs, gControl.fanPwm(), gControl.heatPwm(), gControl.pumpPwm());
+      gLastSensor = gSensors.update(nowMs, 0, gControl.heatPwm(), 0);
       transitionTo(NodeState::CONTROL_LOCAL);
       break;
 
@@ -189,9 +178,9 @@ void loop() {
       telemetry.rackId = gConfig.rackId;
       telemetry.tHotC = gLastSensor.tHotC;
       telemetry.tLiquidC = gLastSensor.tLiquidC;
-      telemetry.fanLocalPwm = gLastActuation.fanPwm;
+      telemetry.fanLocalPwm = 0;
       telemetry.heatPwm = gLastActuation.heatPwm;
-      telemetry.pumpV = gLastActuation.pumpPwm;
+      telemetry.pumpV = 0;
       telemetry.rssi = gNetwork.rssi();
       telemetry.localAnomaly = gLastActuation.localAnomaly;
       telemetry.tsMs = nowMs;
@@ -244,9 +233,7 @@ void loop() {
       if (gCommandFresh && gLastCommand.valid) {
         ControlManager::RemoteSetpoints remote{};
         remote.valid = true;
-        remote.fanPwm = gLastCommand.fanLocalPwm;
         remote.heatPwm = gLastCommand.heatPwm;
-        remote.pumpPwm = gLastCommand.pumpV;
         remote.anomaly = gLastCommand.anomaly;
         gControl.setRemoteSetpoints(remote, nowMs);
       }

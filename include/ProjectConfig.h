@@ -99,14 +99,8 @@
 #ifndef ONE_WIRE_PIN
 #define ONE_WIRE_PIN 14
 #endif
-#ifndef FAN_PIN
-#define FAN_PIN 17
-#endif
 #ifndef HEAT_PIN
 #define HEAT_PIN 18
-#endif
-#ifndef PUMP_PIN
-#define PUMP_PIN 16
 #endif
 
 #ifndef CDU_FAN_A_PIN
@@ -126,9 +120,7 @@ struct RackNodeConfig {
   uint16_t edgeWsPort;
   const char* edgeWsPath;
   uint8_t oneWirePin;
-  uint8_t fanPin;
   uint8_t heatPin;
-  uint8_t pumpPin;
   uint32_t cycleIntervalMs;
   uint32_t networkTimeoutMs;
   uint32_t remoteCmdTtlMs;
@@ -157,9 +149,7 @@ inline RackNodeConfig loadRackConfig() {
   cfg.edgeWsPort = static_cast<uint16_t>(EDGE_WS_PORT);
   cfg.edgeWsPath = EDGE_WS_PATH;
   cfg.oneWirePin = static_cast<uint8_t>(ONE_WIRE_PIN);
-  cfg.fanPin = static_cast<uint8_t>(FAN_PIN);
   cfg.heatPin = static_cast<uint8_t>(HEAT_PIN);
-  cfg.pumpPin = static_cast<uint8_t>(PUMP_PIN);
   cfg.cycleIntervalMs = static_cast<uint32_t>(CYCLE_INTERVAL_MS);
   cfg.networkTimeoutMs = static_cast<uint32_t>(NETWORK_TIMEOUT_MS);
   cfg.remoteCmdTtlMs = static_cast<uint32_t>(REMOTE_CMD_TTL_MS);

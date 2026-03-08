@@ -172,9 +172,9 @@ class DigitalTwinCore:
 
         self.hot = [55.0] * self.COUNT
         self.liquid = [50.0] * self.COUNT
-        self.fan = [180] * self.COUNT
+        self.fan = [0] * self.COUNT
         self.heat = [140] * self.COUNT
-        self.pump = [170] * self.COUNT
+        self.pump = [0] * self.COUNT
         self.anomaly = [False] * self.COUNT
 
         self.supply_A = 29.0
@@ -222,8 +222,7 @@ class DigitalTwinCore:
 
         # Simplified thermal model coefficients
         self.k_heat = 0.020
-        self.k_fan = 0.010
-        self.k_pump = 0.060
+        self.k_zone_fan = 0.240
         self.k_cool = 0.085
         self.alpha_supply = 0.016
         self.beta_rack = 0.17
@@ -296,6 +295,15 @@ class DigitalTwinCore:
         t00 = r00.t_hot if (r00 and self._fresh(r00.received_ts, now)) else self.hot[0]
         t07 = r07.t_hot if (r07 and self._fresh(r07.received_ts, now)) else self.hot[7]
 
+        if self.cdu_state and self._fresh(self.cdu_state.received_ts, now):
+            fanA_meas = self.cdu_state.fanA_pwm
+            fanB_meas = self.cdu_state.fanB_pwm
+            self.supply_A = clamp(self.cdu_state.t_supply_A, 20.0, 45.0)
+            self.supply_B = clamp(self.cdu_state.t_supply_B, 20.0, 45.0)
+        else:
+            fanA_meas = int(self.cdu_cmd["fanA_pwm"])
+            fanB_meas = int(self.cdu_cmd["fanB_pwm"])
+
         for idx in range(self.COUNT):
             label = self._idx_to_label(idx)
             row, col = divmod(idx, self.COLS)
@@ -306,20 +314,21 @@ class DigitalTwinCore:
             if real and self._fresh(real.received_ts, now):
                 self.hot[idx] = real.t_hot
                 self.liquid[idx] = real.t_liquid
-                self.fan[idx] = real.fan_pwm
+                self.fan[idx] = 0
                 self.heat[idx] = real.heat_pwm
-                self.pump[idx] = real.pump_pwm
+                self.pump[idx] = 0
                 self.anomaly[idx] = real.anomaly
                 continue
 
             zone_supply = self.supply_A if self._zone(idx) == "A" else self.supply_B
+            zone_fan = fanA_meas if self._zone(idx) == "A" else fanB_meas
             q_heat = self.k_heat * self.heat[idx]
-            q_rej = self.k_fan * self.fan[idx] + self.k_pump * (self.pump[idx] / 255.0) * max(0.0, self.hot[idx] - zone_supply)
+            q_rej = self.k_zone_fan * (zone_fan / 255.0) * max(0.0, self.hot[idx] - zone_supply)
             nxt = self.hot[idx] + self.beta_rack * (q_heat - q_rej) * dt + 0.18 * (field - self.hot[idx]) * dt
             self.hot[idx] = clamp(nxt, 25.0, 95.0)
             self.liquid[idx] = clamp(self.hot[idx] - (4.4 + 0.8 * math.sin(now * 0.35 + idx)), 22.0, self.hot[idx] - 0.1)
-            self.fan[idx] = clamp_pwm(110 + max(0.0, self.hot[idx] - 45.0) * 3.8, 80, 255)
-            self.pump[idx] = clamp_pwm(95 + max(0.0, self.hot[idx] - 45.0) * 3.0, 70, 255)
+            self.fan[idx] = 0
+            self.pump[idx] = 0
             self.heat[idx] = clamp_pwm(170 - max(0.0, self.hot[idx] - 55.0) * 3.7, 60, 220)
             self.anomaly[idx] = self.hot[idx] >= 75.0
 
@@ -327,15 +336,6 @@ class DigitalTwinCore:
         maxB = max(self.hot[i] for i in range(self.COUNT) if self._zone(i) == "B")
         qinA = sum(self.k_heat * self.heat[i] for i in range(self.COUNT) if self._zone(i) == "A")
         qinB = sum(self.k_heat * self.heat[i] for i in range(self.COUNT) if self._zone(i) == "B")
-
-        if self.cdu_state and self._fresh(self.cdu_state.received_ts, now):
-            fanA_meas = self.cdu_state.fanA_pwm
-            fanB_meas = self.cdu_state.fanB_pwm
-            self.supply_A = clamp(self.cdu_state.t_supply_A, 20.0, 45.0)
-            self.supply_B = clamp(self.cdu_state.t_supply_B, 20.0, 45.0)
-        else:
-            fanA_meas = int(self.cdu_cmd["fanA_pwm"])
-            fanB_meas = int(self.cdu_cmd["fanB_pwm"])
 
         self.supply_A = clamp(self.supply_A + self.alpha_supply * (qinA - self.k_cool * fanA_meas) * dt, 22.0, 45.0)
         self.supply_B = clamp(self.supply_B + self.alpha_supply * (qinB - self.k_cool * fanB_meas) * dt, 22.0, 45.0)
@@ -360,18 +360,18 @@ class DigitalTwinCore:
             zone_supply = self.supply_A if self._zone(idx) == "A" else self.supply_B
             t = self.hot[idx]
             guard = self.anomaly[idx] or t >= 75.0
-            fan_cmd = clamp_pwm(105 + 4.0 * (t - 45.0) + 1.8 * (t - zone_supply), 80, 255)
-            pump_cmd = clamp_pwm(95 + 3.2 * (t - 45.0) + 2.4 * (t - zone_supply), 70, 255)
+            fan_cmd = 0
+            pump_cmd = 0
             heat_cmd = clamp_pwm(180 - 4.5 * (t - 55.0), 60, 220)
             if guard:
-                fan_cmd, pump_cmd, heat_cmd = 255, 255, 80
+                heat_cmd = 80
             self.rack_cmds[label] = {
                 "type": "rack_cmd",
                 "id": label,
                 "fan_local_pwm": fan_cmd,
                 "heat_pwm": heat_cmd,
                 "pump_v": pump_cmd,
-                "mode": "guard" if guard else "co-op",
+                "mode": "guard" if guard else "heat-only-co-op",
                 "anomaly": guard,
             }
 
@@ -384,7 +384,7 @@ class DigitalTwinCore:
         trend = self._trend(now)
         pred5 = max(20.0, avg_hot + trend * 5.0)
 
-        power_idx = sum((self.fan[i] + self.pump[i]) / 510.0 for i in range(self.COUNT)) + (fanA_cmd + fanB_cmd) / 510.0
+        power_idx = (fanA_cmd + fanB_cmd) / 510.0
         power_kw = round(power_idx * 2.4, 3)
         pdelta, pdelta_ready = self._power_delta(now, power_kw)
 
@@ -419,8 +419,8 @@ class DigitalTwinCore:
     def _legacy_response(self, cmd: dict, avg_hot: float) -> dict:
         return {
             "ok": True,
-            "target_fan_pwm": int(cmd.get("fan_local_pwm", 180)),
-            "target_pump_pwm": int(cmd.get("pump_v", 170)),
+            "target_fan_pwm": int(cmd.get("fan_local_pwm", 0)),
+            "target_pump_pwm": int(cmd.get("pump_v", 0)),
             "target_heat_pwm": int(cmd.get("heat_pwm", 120)),
             "global_avg_hot": round(avg_hot, 3),
             "anomaly": bool(cmd.get("anomaly", False)),
@@ -457,14 +457,14 @@ class DigitalTwinCore:
             if rid not in self.real_rack_ids:
                 return {"ok": False, "error": f"rack id {rid} not allowed for real telemetry"}
             now = time.time()
-            fan_pwm = clamp_pwm(payload.get("fan_local_pwm", payload.get("fan_pwm", 0)))
+            fan_pwm = 0
             heat_pwm = clamp_pwm(payload.get("heat_pwm", 140))
-            pump_pwm = clamp_pwm(payload.get("pump_v", payload.get("pump_pwm", 0)))
+            pump_pwm = 0
             t_hot = float(payload.get("t_hot", 0.0))
             t_liquid = float(payload.get("t_liquid", max(20.0, t_hot - 5.0)))
             local_anomaly = bool(payload.get("local_anomaly", False))
 
-            ai_anom, detector_name = self.detector.detect([t_hot, t_liquid, float(fan_pwm), float(heat_pwm), float(pump_pwm)])
+            ai_anom, detector_name = self.detector.detect([t_hot, t_liquid, float(heat_pwm)])
             anomaly = bool(local_anomaly or ai_anom or t_hot >= 85.0)
 
             with self.lock:
@@ -524,7 +524,16 @@ class DigitalTwinCore:
                 label = self._idx_to_label(idx)
                 real = self.racks_real.get(label)
                 is_real = bool(real and self._fresh(real.received_ts, now))
-                cmd = self.rack_cmds.get(label, {"fan_local_pwm": self.fan[idx], "heat_pwm": self.heat[idx], "pump_v": self.pump[idx], "mode": "synthetic_cooperative", "anomaly": self.anomaly[idx]})
+                cmd = self.rack_cmds.get(
+                    label,
+                    {
+                        "fan_local_pwm": self.fan[idx],
+                        "heat_pwm": self.heat[idx],
+                        "pump_v": self.pump[idx],
+                        "mode": "heat-only-co-op",
+                        "anomaly": self.anomaly[idx],
+                    },
+                )
 
                 fan_pwm = int(real.fan_pwm) if is_real and real else int(self.fan[idx])
                 heat_pwm = int(real.heat_pwm) if is_real and real else int(self.heat[idx])
@@ -549,7 +558,7 @@ class DigitalTwinCore:
                         "target_heat_pwm": int(cmd.get("heat_pwm", heat_pwm)),
                         "target_pump_pwm": int(cmd.get("pump_v", pump_pwm)),
                         "virtual_flow": round(pump_pwm / 255.0, 4),
-                        "mode": cmd.get("mode", "co-op") if is_real else "synthetic_cooperative",
+                        "mode": cmd.get("mode", "co-op") if is_real else "heat-only-co-op",
                         "detector": real.detector if is_real and real else "derived",
                         "anomaly": anomaly,
                         "status": self._status(t_hot, anomaly),
