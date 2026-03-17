@@ -45,7 +45,7 @@ O projeto implementa um **digital twin térmico** para um pequeno data center co
 │  Dispositivos Edge (ESP32)                              │
 │  ┌──────────────┐   ┌──────────────┐   ┌────────────┐  │
 │  │ Rack R00     │   │ Rack R07     │   │  CDU       │  │
-│  │ (ESP32dev)   │   │ (ESP32dev)   │   │ (ESP32-C6) │  │
+│  │ (ESP8266)    │   │ (ESP8266)    │   │ (ESP32-C6) │  │
 │  └──────┬───────┘   └──────┬───────┘   └─────┬──────┘  │
 │         └─────────WebSocket (port 8765)───────┘         │
 └─────────────────────────┬───────────────────────────────┘
@@ -114,22 +114,29 @@ Todos os parâmetros são passados como macros de pré-processador (`-D`). Isto 
 
 ```ini
 [env:rack_r00]
-board = esp32dev
+platform = espressif8266
+board = esp12e
+lib_deps =
+  ${env.lib_deps}
+  paulstoffregen/OneWire@^2.3.8
+  milesburton/DallasTemperature@^4.0.5
 build_flags =
   ${env.build_flags}
   -DDEVICE_ROLE=1
   -DNODE_ID=\"RACK_A\"
   -DRACK_ID=\"R00\"
   -DONE_WIRE_PIN=4
-  -DHEAT_PIN=18
+  -DHEAT_PIN=5
+  -DHEATER_RATED_POWER_W=1.44
 ```
 
 `DEVICE_ROLE=1` seleciona o código de rack dentro de `src/main.cpp`. Os dois racks usam o mesmo binário base mas com IDs diferentes (`R00` vs `R07`). As bibliotecas `OneWire` e `DallasTemperature` são incluídas aqui (não no CDU).
 
-### Target `cdu_esp32c6`
+### Target `cdu_esp32c6` e `cdu_esp32c6_full`
 
 ```ini
 [env:cdu_esp32c6]
+; Stage1: 1 rack, 1 fan, 1 Peltier, 1 Peltier fan
 platform = https://github.com/pioarduino/platform-espressif32.git#55.03.37
 board = esp32-c6-devkitc-1
 lib_ignore =
@@ -138,11 +145,31 @@ lib_ignore =
 build_flags =
   ${env.build_flags}
   -DDEVICE_ROLE=2
-  -DCDU_FAN_A_PIN=4
-  -DCDU_FAN_B_PIN=5
+  -DCDU_FAN_A_PIN=6
+  -DCDU_FAN_B_PIN=255
+  -DCDU_PELTIER_A_PIN=18
+  -DCDU_PELTIER_B_PIN=255
+  -DCDU_PELTIER_FAN_A_PIN=20
+  -DCDU_PELTIER_FAN_B_PIN=255
+
+[env:cdu_esp32c6_full]
+; Full: 2 racks, 2 fans, 2 Peltiers, 2 Peltier fans
+build_flags =
+  ${env.build_flags}
+  -DDEVICE_ROLE=2
+  -DCDU_FAN_A_PIN=6
+  -DCDU_FAN_B_PIN=7
+  -DCDU_PELTIER_A_PIN=18
+  -DCDU_PELTIER_B_PIN=19
+  -DCDU_PELTIER_FAN_A_PIN=20
+  -DCDU_PELTIER_FAN_B_PIN=21
 ```
 
-O ESP32-C6 usa uma **plataforma e toolchain separadas** para evitar conflitos com o ESP32 clássico (que usa Xtensa; o C6 usa RISC-V). As bibliotecas `control` e `sensors` são ignoradas porque a CDU não mede temperatura interna nem controla heaters — só move fans.
+O ESP32-C6 usa uma **plataforma e toolchain separadas** para evitar conflitos com o ESP32 clássico (RISC-V vs Xtensa). As bibliotecas `control` e `sensors` são ignoradas porque a CDU não mede temperatura interna nem controla heaters.
+
+`Pin=255` é o sentinel "não disponível" — o firmware verifica `pinAvailable(pin)` antes de qualquer `pinMode`/`analogWrite`/`digitalWrite`, por isso pinos não ligados são seguros.
+
+O `default_envs = rack_r00` garante que `platformio run` simples compila apenas o rack, evitando que o toolchain do ESP32-C6 (que precisa de packages dir isolado) seja invocado acidentalmente.
 
 ---
 
@@ -200,7 +227,7 @@ inline RackNodeConfig loadRackConfig() {
 
 ### Struct `CduConfig`
 
-Versão simplificada para o CDU — contém apenas Wi-Fi, servidor, pinos dos fans e temporizadores. Não tem coeficientes térmicos porque a CDU não simula temperatura.
+Versão simplificada para o CDU — contém Wi-Fi, servidor, pinos dos fans, pinos dos módulos Peltier, pinos das ventoinhas de dissipador dos Peltiers, polaridades e temporizadores. Não tem coeficientes térmicos porque a CDU não simula temperatura interna.
 
 ---
 
@@ -219,12 +246,11 @@ const float heatGain = config_.heatGainCPerSec * (0.45f + heatNorm * 1.2f);
 // Transferências de calor (perda do hot)
 const float hotToLiquid    = config_.hotToLiquidCoeff * hotMinusLiquid;
 const float hotToAmbient   = config_.hotToAmbientCoeff * (0.2f + fanNorm) * hotMinusAmbient;
-const float flowCooling    = config_.flowCoolingCoeff  * flowNorm * hotMinusLiquid;
 const float liquidToAmbient = config_.liquidToAmbientCoeff * (0.2f + fanNorm) * liquidMinusAmbient;
 
 // Equações diferenciais (Euler explícito)
-const float dHot    = heatGain - hotToAmbient - hotToLiquid - (0.45f * flowCooling);
-const float dLiquid = hotToLiquid + flowCooling - liquidToAmbient;
+const float dHot    = heatGain - hotToAmbient - hotToLiquid;
+const float dLiquid = hotToLiquid - liquidToAmbient;
 
 simulatedHotC_    += dHot    * dtSec;
 simulatedLiquidC_ += dLiquid * dtSec;
@@ -233,41 +259,57 @@ simulatedLiquidC_ += dLiquid * dtSec;
 A física é simplificada mas realista:
 - `heatGain` cresce linearmente com o PWM do heater
 - `hotToAmbient` aumenta com o fan (convecção forçada)
-- `flowCooling` aumenta com o caudal da bomba
+- `hotToLiquid` representa o acoplamento entre a zona quente e a massa termica estimada
 
-### Modo Hardware (`simulationMode = false`) com DS18B20
+### Modo Hardware (`simulationMode = false`) com DS18B20 — conversão assíncrona
+
+A leitura do DS18B20 **não bloqueia o loop**. Em vez disso usa um padrão de conversão adiada:
 
 ```cpp
+// begin(): dispara primeira conversão e regista janela de espera
+dallas_.setWaitForConversion(false);  // não bloqueia em requestTemperatures()
 dallas_.requestTemperatures();
-const float hot    = dallas_.getTempCByIndex(0);
-const float liquid = dallas_.getTempCByIndex(1);
+conversionReadyAtMs_ = lastUpdateMs_ + kConversionTimeMs;  // ~187ms a 10-bit
+conversionPending_ = true;
 
-const bool hotValid    = validTemperature(hot);
-const bool liquidValid = validTemperature(liquid);
-```
+// update(): chamado em cada loop — só lê quando a janela de conversão terminou
+SensorReadout SensorManager::updateFromHardware(uint32_t nowMs, ...) {
+    if (!conversionPending_) {
+        dallas_.requestTemperatures();
+        conversionReadyAtMs_ = nowMs + kConversionTimeMs;
+        conversionPending_ = true;
+    }
 
-Se apenas **uma sonda** estiver ligada (situação comum na bancada), o código **estima** `t_liquid` como estado virtual amortecido:
+    // Ainda dentro da janela de conversão?
+    if (static_cast<int32_t>(nowMs - conversionReadyAtMs_) < 0) {
+        if (haveHardwareReadout_) return lastHardwareReadout_;
+        return updateSimulated(nowMs, ...);  // fallback simulado enquanto espera
+    }
 
-```cpp
-if (hotValid && !liquidValid) {
-    float targetDelta = 4.8f - (1.7f * flowNorm) - (0.9f * fanNorm);
-    targetDelta = clampFloat(targetDelta, 2.0f, 8.5f);
-    const float targetLiquid = simulatedHotC_ - targetDelta;
-    simulatedLiquidC_ += (targetLiquid - simulatedLiquidC_) * 0.22f;  // filtro IIR
+    // Janela terminada: lê resultado e lança nova conversão imediatamente
+    const float hot    = dallas_.getTempCByIndex(0);
+    const float liquid = dallas_.getTempCByIndex(1);
+    dallas_.requestTemperatures();
+    conversionReadyAtMs_ = nowMs + kConversionTimeMs;
 }
 ```
 
-O delta entre hot e liquid é tipicamente 4-5°C, ajustado pelo caudal e pelo fan. O filtro IIR (coef. 0.22) suaviza a estimativa.
+O loop principal nunca pára ~187ms à espera da sonda. Durante a janela de conversão, o firmware devolve a última leitura válida ou os valores simulados como fallback, garantindo que o WebSocket mantém keepalives.
+
+Se apenas **uma sonda** estiver ligada, `t_liquid` é estimado como estado virtual amortecido a partir de `simulatedLiquidC_`.
 
 ### Validação de temperatura
 
 ```cpp
 bool SensorManager::validTemperature(float value) const {
+    if (!isfinite(value))              return false;  // rejeita NaN e Inf
     if (value <= -100.0f || value >= 130.0f) return false;
-    if (value == DEVICE_DISCONNECTED_C)      return false;
+    if (value == DEVICE_DISCONNECTED_C) return false;
     return true;
 }
 ```
+
+`isfinite` é a primeira verificação porque comparações com NaN em C++ retornam sempre `false`, o que faria NaN passar pelas verificações seguintes e propagar-se silenciosamente pelo pipeline de controlo.
 
 `DEVICE_DISCONNECTED_C` é a constante da biblioteca DallasTemperature para sonda desligada (-127°C).
 
@@ -280,14 +322,13 @@ O `ControlManager` decide o PWM do heater em cada ciclo, combinando lógica loca
 ### Cálculo do PWM local
 
 ```cpp
-uint8_t ControlManager::localHeatFromTemp(float tHotC, float tLiquidC) const {
-    const float delta = tHotC - tLiquidC;
-    const int raw = static_cast<int>(190.0f - (tHotC - 40.0f) * 4.0f - delta * 2.5f);
+uint8_t ControlManager::localHeatFromTemp(float tHotC) const {
+    const int raw = static_cast<int>(190.0f - (tHotC - 40.0f) * 5.0f);
     return clampPwm(raw, config_.minHeatPwm, config_.maxHeatPwm);
 }
 ```
 
-A fórmula é uma lei linear: o PWM base é 190, reduzido 4 unidades por cada grau acima de 40°C (hot) e 2.5 unidades por cada grau de diferença hot-liquid. Quanto mais quente, menos carga térmica.
+A fórmula é uma lei linear: o PWM base é 190, reduzido 5 unidades por cada grau acima de 40°C. Quanto mais quente, menos carga térmica imposta pelo rack.
 
 ### Deteção de falha local e proteções
 
@@ -320,11 +361,12 @@ if (remote_.valid && remoteFresh(nowMs)) {
 
     if (remote_.anomaly) {
         heat = config_.minHeatPwm;  // servidor diz anomalia global → corta
+        out.localAnomaly = true;    // propaga na telemetria para o servidor ver
     }
 }
 ```
 
-O servidor tem mais peso (60%) que o controlo local (40%). Se o servidor sinalizar anomalia global, o heater é cortado independentemente da temperatura local.
+O servidor tem mais peso (60%) que o controlo local (40%). Se o servidor sinalizar anomalia global, o heater é cortado e `localAnomaly=true` é refletido na próxima telemetria — o servidor recebe confirmação explícita de que a rack atuou sobre o sinal.
 
 ### Temperatura crítica (último recurso)
 
@@ -451,7 +493,6 @@ String encodeRackTelemetryJson(const RackTelemetryMessage& message) {
     doc["t_liquid"]      = message.tLiquidC;   // temperatura liquid (°C)
     doc["fan_local_pwm"] = message.fanLocalPwm; // sempre 0 (sem fan local)
     doc["heat_pwm"]      = message.heatPwm;    // PWM atual do heater
-    doc["pump_v"]        = message.pumpV;      // sempre 0 (sem bomba local)
     doc["rssi"]          = message.rssi;       // sinal Wi-Fi (dBm)
     doc["local_anomaly"] = message.localAnomaly; // bool
     doc["ts"]            = message.tsMs;       // timestamp millis()
@@ -474,7 +515,9 @@ A dupla leitura `doc["heat_pwm"] | doc["target_heat_pwm"]` garante compatibilida
 
 ### Telemetria CDU e Comando CDU
 
-Estrutura análoga para a CDU: envia `type: "cdu_telemetry"` com `fanA_pwm`, `fanB_pwm`, `t_supply_A`, `t_supply_B`; recebe `fanA_pwm`, `fanB_pwm`, `t_supply_target`.
+Estrutura análoga para a CDU: envia `type: "cdu_telemetry"` com `fanA_pwm`, `fanB_pwm`, `peltierA_on`, `peltierB_on`, `t_supply_A`, `t_supply_B`; recebe `fanA_pwm`, `fanB_pwm`, `peltierA_on`, `peltierB_on`, `t_supply_target`.
+
+O campo `t_supply_target` é opcional no comando. O firmware usa o struct `CduCommandMessage.hasSupplyTarget` para distinguir "campo presente" de "campo ausente". O target só é atualizado quando presente **e** o valor é finito — protege contra comandos malformados que omitem o campo e dariam `tSupplyTarget = 0.0f` por defeito.
 
 ---
 
@@ -504,13 +547,13 @@ enum class NodeState : uint8_t {
 
 **READ_SENSORS**:
 ```cpp
-gLastSensor = gSensors.update(nowMs, 0, gControl.heatPwm(), 0);
+gLastSensor = gSensors.update(nowMs, 0, gControl.heatPwm());
 ```
 Lê ou simula as temperaturas. Passa o PWM atual do heater ao simulador para que o modelo térmico seja coerente.
 
 **CONTROL_LOCAL**:
 ```cpp
-gLastActuation = gControl.compute(gLastSensor.tHotC, gLastSensor.tLiquidC,
+gLastActuation = gControl.compute(gLastSensor.tHotC,
                                    gLastSensor.sensorOk, nowMs);
 gControl.apply(gLastActuation, nowMs);
 
@@ -575,18 +618,47 @@ analogWrite(gConfig.fanAPin, gFanACurrent);
 
 Com `step=4` e `CYCLE_INTERVAL_MS=1000`, o fan demora ~60 ciclos (60s) a ir de 0 a 255. Isto evita picos de corrente e ruído acústico.
 
+#### Peltier e ventoinha do dissipador quente
+
+```cpp
+void writePeltier(uint8_t pin, bool enabled) {
+    if (!pinAvailable(pin)) return;
+    const bool activeHigh = gConfig.peltierActiveHigh;
+    digitalWrite(pin, (enabled == activeHigh) ? HIGH : LOW);
+}
+
+void writePeltierFan(uint8_t pin, bool enabled) {
+    if (!pinAvailable(pin)) return;
+    const bool activeHigh = gConfig.peltierFanActiveHigh;
+    digitalWrite(pin, (enabled == activeHigh) ? HIGH : LOW);
+}
+
+void applyPeltiers() {
+    gPeltierACurrent = gPeltierATarget;
+    gPeltierBCurrent = gPeltierBTarget;
+    writePeltier(gConfig.peltierAPin, gPeltierACurrent);
+    writePeltier(gConfig.peltierBPin, gPeltierBCurrent);
+    // Ventoinha do dissipador quente segue o estado do módulo Peltier
+    writePeltierFan(gConfig.peltierFanAPin, gPeltierACurrent);
+    writePeltierFan(gConfig.peltierFanBPin, gPeltierBCurrent);
+}
+```
+
+As ventoinhas de dissipador quente (`peltierFanA/B`) não precisam de canal de comando separado no servidor — são ativadas automaticamente em sincronia com o módulo Peltier respetivo. Se o Peltier A está ligado, a sua ventoinha de dissipador liga; quando o Peltier desliga, a ventoinha desliga.
+
 #### Temperatura virtual de supply
 
 ```cpp
 void updateVirtualSupply(float dtSec) {
-    const float coolA = (gFanACurrent / 255.0f) * 1.8f;
+    const float peltierBoostA = gPeltierACurrent ? 0.95f : 0.0f;
+    const float coolA = (gFanACurrent / 255.0f) * 1.8f + peltierBoostA;
     const float loadA = 1.3f;  // carga fixa assumida
     gSupplyA += (loadA - coolA) * 0.12f * dtSec;
-    gSupplyA = constrain(gSupplyA, 22.0f, 45.0f);
+    gSupplyA = constrain(gSupplyA, 18.0f, 45.0f);
 }
 ```
 
-Estima a temperatura da água de supply como função da potência de arrefecimento vs carga. Envia este valor ao servidor para alimentar o modelo térmico global.
+Estima a temperatura da água de supply como função da potência de arrefecimento (fan + Peltier) vs carga. O boost Peltier (`0.95f`) modela a capacidade adicional de arrefecimento quando o módulo está ativo.
 
 #### Fallback local
 
@@ -600,7 +672,7 @@ void applyFallbackIfStale(uint32_t nowMs) {
 }
 ```
 
-O CDU mantém a temperatura de supply perto do target (29.5°C por defeito) usando um controlador proporcional local.
+O CDU mantém a temperatura de supply perto do target usando um controlador proporcional local. O `gSupplyTarget` só é atualizado quando o comando do servidor inclui o campo `t_supply_target` **e** o valor é finito — evita que um comando malformado force o target para 0°C, o que daria fan a máxima velocidade indefinidamente.
 
 ---
 
@@ -702,7 +774,6 @@ class RackState:
     t_liquid: float
     fan_pwm: int
     heat_pwm: int
-    pump_pwm: int
     rssi: int
     anomaly: bool
     detector: str    # "zscore" ou "isolation_forest"
@@ -719,6 +790,8 @@ class CduState:
 ```
 
 Dataclasses imutáveis (são substituídas inteiras, não mutadas). O campo `received_ts` é usado para detetar dados stale (mais velhos que `stale_seconds = 8s`).
+
+Quando uma rack entra em modo stale, a transição não é abrupta — há uma janela de `--stale-transition-seconds` (default 4s) durante a qual todos os campos (temperaturas, `fan_pwm`, `heat_pwm`, `heater_on`, `anomaly`) fazem blend gradual do último valor real para o valor modelado. Isto garante que a UI e a API nunca mostram um estado parcialmente real e parcialmente "congelado".
 
 ### 9.4 Núcleo do Modelo Térmico — `DigitalTwinCore`
 
@@ -833,9 +906,14 @@ def process_message(self, payload, source="tcp"):
         rid = self._normalize_id(payload["id"])
         if rid not in self.real_rack_ids:
             return {"ok": False, "error": "rack id not allowed"}  # rejeita nós desconhecidos
+        # Valida floats: NaN/Inf em t_hot_real_c ou outros campos são rejeitados
+        t_hot = finite_float(payload.get("t_hot_real_c") or payload.get("t_hot"))
+        if t_hot is None:
+            return {"ok": False, "error": "invalid t_hot"}
         # Deteção de anomalia AI
         ai_anom, detector_name = self.detector.detect([t_hot, t_liquid, heat_pwm])
-        anomaly = local_anomaly or ai_anom or (t_hot >= 85.0)
+        # threshold configurável via --anomaly-temp-c (default 80°C, igual ao firmware)
+        anomaly = local_anomaly or ai_anom or (t_hot >= self.anomaly_temp_c)
         # Atualiza RackState, corre modelo, retorna rack_cmd
 ```
 
@@ -919,6 +997,10 @@ def main():
     parser.add_argument("--ws-port",    default=8000,  type=int)  # WS-twin
     parser.add_argument("--edge-ws-port", default=8765, type=int) # WS-edge
     parser.add_argument("--detector",   default="zscore", choices=["zscore","iforest"])
+    parser.add_argument("--anomaly-temp-c", default=80.0, type=float)
+    # ^ threshold alinhado com ANOMALY_TEMP_C=80 do firmware
+    parser.add_argument("--stale-transition-seconds", default=4.0, type=float)
+    # ^ janela de blend entre último estado real e modelo simulado (fan/heat/anomaly)
     parser.add_argument("--no-ui",      action="store_true")
     parser.add_argument("--no-ws",      action="store_true")
     parser.add_argument("--no-tcp",     action="store_true")
@@ -952,7 +1034,7 @@ Divide o ecrã em duas secções:
     <!-- KPIs: avg_hot, max_hot, critical_rack, total_cooling_power -->
     <!-- AI Monitor: status, confidence, trend, prediction 5min, anomaly risk -->
     <!-- CDU Plant: supply A/B, fan A/B -->
-    <!-- Tabela de racks: label, status, temp, barra, fan, pump, mode -->
+    <!-- Tabela de racks: label, status, temp, barra, fan, mode -->
   </aside>
 </div>
 ```
@@ -1067,7 +1149,9 @@ async function loadRuntimeConfig() {
 }
 
 function connectWebSocket() {
-    socket = new WebSocket(`ws://${wsConfig.host}:${wsConfig.port}`);
+    // Detecta protocolo da página: ws:// em HTTP, wss:// em HTTPS
+    const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+    socket = new WebSocket(`${wsProto}//${wsConfig.host}:${wsConfig.port}`);
 
     socket.onmessage = (event) => {
         const payload = JSON.parse(event.data);
@@ -1124,22 +1208,32 @@ if self.anomaly_after and not self.anomaly_applied and elapsed >= self.anomaly_a
 for rack in (rack_a, rack_b):
     ok, response, error = send_once(host, port, rack.telemetry(now_ms))
     if ok:
-        rack.apply_command(response)   # atualiza fan/heat/pump com o comando recebido
+        rack.apply_command(response)   # atualiza fan/heat com o comando recebido
+    # Se ok=False (servidor retornou {"ok":false,...}), o erro é propagado
+    # e o rack mantém o estado anterior — não aplica comandos de mensagens rejeitadas
 ```
 
-O simulador aplica os comandos recebidos ao seu modelo interno — a simulação é **closed-loop**: o servidor influencia o comportamento futuro do simulador.
+O simulador aplica os comandos recebidos ao seu modelo interno — a simulação é **closed-loop**: o servidor influencia o comportamento futuro do simulador. Respostas com `"ok": false` (e.g., rack id não autorizado) são tratadas como falha semântica, não como sucesso.
 
 ---
 
-## 12. Script de Build CDU — `tools/cdu_build.ps1`
+## 12. Scripts de Build CDU — `tools/cdu_build.ps1` e `tools/stage_build.ps1`
 
 ```powershell
-# Isola o cache do ESP32-C6 para evitar conflitos com o ESP32 clássico
+# cdu_build.ps1 — build manual com packages dir isolado
 $env:PLATFORMIO_PACKAGES_DIR = ".pio-cdu-packages"
 pio run -e cdu_esp32c6
+
+# stage_build.ps1 — build por perfil (stage1 ou full)
+# Uso: .\tools\stage_build.ps1 build stage1
+#      .\tools\stage_build.ps1 build full
+$pioArgs = @("run", "-e", $EnvName)
+& $pioExe @pioArgs
 ```
 
-O ESP32-C6 (RISC-V) e o ESP32 clássico (Xtensa) usam toolchains completamente diferentes. Se ambos partilhassem a pasta `.pio`, poderia haver conflitos de cache. Este script isola o build do CDU numa pasta dedicada.
+O ESP32-C6 (RISC-V) e o ESP32 clássico (Xtensa) usam toolchains completamente diferentes. Se ambos partilhassem a pasta `.pio`, poderia haver conflitos de cache. Estes scripts isolam o build do CDU numa pasta dedicada (`.pio-cdu-packages`).
+
+`stage_build.ps1` usa a variável `$pioArgs` (não `$args` que é variável automática do PowerShell) para o splatting correto de argumentos. Suporta perfis `stage1` (`cdu_esp32c6`) e `full` (`cdu_esp32c6_full`).
 
 ---
 

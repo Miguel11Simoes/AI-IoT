@@ -16,7 +16,6 @@ class RackModel:
     t_liquid: float
     fan_pwm: int
     heat_pwm: int
-    pump_pwm: int
     anomaly_after: Optional[float] = None
     fault_scale: float = 1.0
     anomaly_applied: bool = False
@@ -28,7 +27,6 @@ class RackModel:
             self.anomaly_applied = True
 
         fan = self.fan_pwm / 255.0
-        flow = self.pump_pwm / 255.0
         heat = self.heat_pwm / 255.0
 
         noise = random.uniform(-0.03, 0.03)
@@ -38,10 +36,9 @@ class RackModel:
         heat_gain = self.base_heat * (0.45 + heat * 1.2) + noise
         hot_to_liquid = 0.22 * hot_minus_liquid
         forced_reject = (0.05 + 0.25 * fan) * self.fault_scale * hot_minus_supply
-        flow_reject = 0.16 * flow * self.fault_scale * hot_minus_supply
 
-        d_hot = heat_gain - hot_to_liquid - forced_reject - flow_reject
-        d_liquid = hot_to_liquid - 0.18 * flow * (self.t_liquid - supply)
+        d_hot = heat_gain - hot_to_liquid - forced_reject
+        d_liquid = hot_to_liquid - 0.08 * (self.t_liquid - supply)
 
         self.t_hot += d_hot * dt
         self.t_liquid += d_liquid * dt
@@ -53,14 +50,23 @@ class RackModel:
         self.t_liquid = max(20.0, min(110.0, self.t_liquid))
 
     def telemetry(self, now_ms: int) -> dict:
+        heater_rated_power_w = 20.0
         return {
             "type": "rack_telemetry",
             "id": self.rack_id,
+            "t_hot_real_c": round(self.t_hot, 3),
+            "t_liquid_real_c": round(self.t_liquid, 3),
+            "t_hot_source": "simulated",
+            "t_liquid_source": "simulated",
+            "telemetry_mode": "simulated",
+            "sensor_ok": True,
             "t_hot": round(self.t_hot, 3),
             "t_liquid": round(self.t_liquid, 3),
             "fan_local_pwm": int(self.fan_pwm),
             "heat_pwm": int(self.heat_pwm),
-            "pump_v": int(self.pump_pwm),
+            "heater_on": bool(self.heat_pwm > 0),
+            "heater_rated_power_w": heater_rated_power_w,
+            "heater_avg_power_w": round(heater_rated_power_w * (self.heat_pwm / 255.0), 3),
             "rssi": -48 if self.rack_id == "R00" else -53,
             "local_anomaly": False,
             "ts": now_ms,
@@ -69,7 +75,6 @@ class RackModel:
     def apply_command(self, response: dict) -> None:
         self.fan_pwm = int(max(0, min(255, response.get("fan_local_pwm", response.get("target_fan_pwm", self.fan_pwm)))))
         self.heat_pwm = int(max(0, min(255, response.get("heat_pwm", response.get("target_heat_pwm", self.heat_pwm)))))
-        self.pump_pwm = int(max(0, min(255, response.get("pump_v", response.get("target_pump_pwm", self.pump_pwm)))))
 
 
 @dataclass
@@ -77,12 +82,14 @@ class CduModel:
     cdu_id: str
     fanA_pwm: int = 150
     fanB_pwm: int = 150
+    peltierA_on: bool = False
+    peltierB_on: bool = False
     t_supply_A: float = 29.5
     t_supply_B: float = 30.0
 
     def step(self, dt: float) -> None:
-        cool_a = (self.fanA_pwm / 255.0) * 1.9
-        cool_b = (self.fanB_pwm / 255.0) * 1.9
+        cool_a = (self.fanA_pwm / 255.0) * 1.9 + (0.95 if self.peltierA_on else 0.0)
+        cool_b = (self.fanB_pwm / 255.0) * 1.9 + (0.95 if self.peltierB_on else 0.0)
         self.t_supply_A += (1.35 - cool_a) * 0.11 * dt
         self.t_supply_B += (1.35 - cool_b) * 0.11 * dt
         self.t_supply_A = max(22.0, min(45.0, self.t_supply_A))
@@ -94,6 +101,8 @@ class CduModel:
             "id": self.cdu_id,
             "fanA_pwm": int(self.fanA_pwm),
             "fanB_pwm": int(self.fanB_pwm),
+            "peltierA_on": bool(self.peltierA_on),
+            "peltierB_on": bool(self.peltierB_on),
             "t_supply_A": round(self.t_supply_A, 3),
             "t_supply_B": round(self.t_supply_B, 3),
             "ts": now_ms,
@@ -102,6 +111,8 @@ class CduModel:
     def apply_command(self, response: dict) -> None:
         self.fanA_pwm = int(max(0, min(255, response.get("fanA_pwm", self.fanA_pwm))))
         self.fanB_pwm = int(max(0, min(255, response.get("fanB_pwm", self.fanB_pwm))))
+        self.peltierA_on = bool(response.get("peltierA_on", self.peltierA_on))
+        self.peltierB_on = bool(response.get("peltierB_on", self.peltierB_on))
 
 
 def recv_line(conn: socket.socket, timeout_s: float = 3.0) -> str:
@@ -124,14 +135,17 @@ def send_once(host: str, port: int, payload: dict) -> Tuple[bool, dict, str]:
             line = recv_line(conn)
             if not line:
                 return False, {}, "empty response"
-            return True, json.loads(line), ""
+            response = json.loads(line)
+            if isinstance(response, dict) and response.get("ok") is False:
+                return False, response, str(response.get("error", "server rejected request"))
+            return True, response, ""
     except Exception as exc:
         return False, {}, str(exc)
 
 
 def run_simulation(host: str, port: int, interval_s: float, duration_s: float, anomaly_after: float) -> None:
-    rack_a = RackModel("R00", base_heat=2.7, t_hot=40.0, t_liquid=34.0, fan_pwm=130, heat_pwm=150, pump_pwm=120)
-    rack_b = RackModel("R07", base_heat=3.1, t_hot=42.0, t_liquid=35.5, fan_pwm=138, heat_pwm=156, pump_pwm=126, anomaly_after=anomaly_after)
+    rack_a = RackModel("R00", base_heat=2.7, t_hot=40.0, t_liquid=34.0, fan_pwm=130, heat_pwm=150)
+    rack_b = RackModel("R07", base_heat=3.1, t_hot=42.0, t_liquid=35.5, fan_pwm=138, heat_pwm=156, anomaly_after=anomaly_after)
     cdu = CduModel("CDU1")
 
     start = time.time()
@@ -158,7 +172,7 @@ def run_simulation(host: str, port: int, interval_s: float, duration_s: float, a
                 rack.apply_command(response)
                 print(
                     f"[{rack.rack_id}] cycle={cycle:04d} hot={rack.t_hot:6.2f} "
-                    f"liq={rack.t_liquid:6.2f} fan={rack.fan_pwm:3d} heat={rack.heat_pwm:3d} pump={rack.pump_pwm:3d}"
+                    f"liq={rack.t_liquid:6.2f} fan={rack.fan_pwm:3d} heat={rack.heat_pwm:3d}"
                 )
             else:
                 print(f"[{rack.rack_id}] cycle={cycle:04d} network error ({error})")
@@ -168,6 +182,7 @@ def run_simulation(host: str, port: int, interval_s: float, duration_s: float, a
             cdu.apply_command(response)
             print(
                 f"[CDU] cycle={cycle:04d} fanA={cdu.fanA_pwm:3d} fanB={cdu.fanB_pwm:3d} "
+                f"peltierA={int(cdu.peltierA_on)} peltierB={int(cdu.peltierB_on)} "
                 f"supplyA={cdu.t_supply_A:5.2f} supplyB={cdu.t_supply_B:5.2f}"
             )
         else:

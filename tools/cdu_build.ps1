@@ -1,6 +1,9 @@
 param(
   [ValidateSet("build", "upload")]
-  [string]$Action = "build"
+  [string]$Action = "build",
+  [ValidateSet("stage1", "full")]
+  [string]$Profile = "stage1",
+  [string]$UploadPort = ""
 )
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -13,10 +16,15 @@ if (-not (Test-Path $pioExe)) {
 
 Push-Location $projectRoot
 try {
+  $envName = if ($Profile -eq "full") { "cdu_esp32c6_full" } else { "cdu_esp32c6" }
   if ($Action -eq "upload") {
-    & $pioExe run -e cdu_esp32c6 -t upload
+    if ([string]::IsNullOrWhiteSpace($UploadPort)) {
+      & $pioExe run -e $envName -t upload
+    } else {
+      & $pioExe run -e $envName -t upload --upload-port $UploadPort
+    }
   } else {
-    & $pioExe run -e cdu_esp32c6
+    & $pioExe run -e $envName
   }
 } finally {
   Pop-Location

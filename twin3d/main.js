@@ -31,6 +31,11 @@ const kpiMax = document.getElementById("kpi-max");
 const kpiCritical = document.getElementById("kpi-critical");
 const kpiPower = document.getElementById("kpi-power");
 const kpiPowerDelta = document.getElementById("kpi-power-delta");
+const kpiSourceReal = document.getElementById("kpi-source-real");
+const kpiSourceStale = document.getElementById("kpi-source-stale");
+const kpiSourceSim = document.getElementById("kpi-source-sim");
+const kpiHeaterEq = document.getElementById("kpi-heater-eq");
+const kpiHeaterTarget = document.getElementById("kpi-heater-target");
 
 const kpiAiStatus = document.getElementById("kpi-ai-status");
 const kpiAiConfidence = document.getElementById("kpi-ai-confidence");
@@ -41,6 +46,7 @@ const kpiCduStatus = document.getElementById("kpi-cdu-status");
 const kpiSupplyA = document.getElementById("kpi-supply-a");
 const kpiSupplyB = document.getElementById("kpi-supply-b");
 const kpiCduFans = document.getElementById("kpi-cdu-fans");
+const kpiCduPeltiers = document.getElementById("kpi-cdu-peltiers");
 
 const HERO_SPARKLINE_WINDOW_MS = 60_000;
 const HERO_SPARKLINE_POINTS = 36;
@@ -71,6 +77,22 @@ function toStatusLabel(status) {
   if (status === "critical") return "Critical";
   if (status === "warning") return "Warning";
   return "Normal";
+}
+
+function toSourceLabel(sourceStatus) {
+  if (sourceStatus === "real") return "Real";
+  if (sourceStatus === "stale") return "Stale";
+  return "Simulated";
+}
+
+function formatTempValue(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `${num.toFixed(1)}\u00B0C` : "--";
+}
+
+function formatPowerValue(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `${num.toFixed(2)} W` : "--";
 }
 
 function pushHeroSparklinePoint(temp) {
@@ -222,7 +244,6 @@ for (let i = 0; i < RACK_COUNT; i += 1) {
     targetAnomaly: false,
     anomaly: false,
     fanPwm: 0,
-    pumpPwm: 0,
     mode: "pending",
     status: "normal",
     isReal: false,
@@ -373,8 +394,8 @@ function applyRackVisual(slot, dtSec, nowSec) {
   slot.targetColor.copy(thermalGradient(slot.currentHot)).multiplyScalar(0.62);
   slot.currentColor.lerp(slot.targetColor, Math.min(1, dtSec * 3.4));
 
-  const flow = THREE.MathUtils.clamp(slot.pumpPwm / 255, 0, 1);
-  const baseIntensity = 0.34 + flow * 0.38;
+  const fan = THREE.MathUtils.clamp(slot.fanPwm / 255, 0, 1);
+  const baseIntensity = 0.34 + fan * 0.38;
   const anomalyPulse = slot.anomaly ? 0.24 + Math.sin(nowSec * 6.0 + slot.id) * 0.08 : 0.0;
   const criticalPulse = slot.isCritical ? 0.12 + Math.sin(nowSec * 4.6 + slot.id) * 0.06 : 0.0;
   const hoverBoost = slot.id === hoveredRackId ? 0.12 : 0.0;
@@ -440,6 +461,11 @@ function updatePanel(payload) {
   const aiConfidence = Number(g.ai_confidence || 0);
   const anomalyRiskPct = Number(g.anomaly_risk_pct ?? 0);
   const aiStatus = String(g.ai_status || "nominal");
+  const sourceReal = Number(g.active_nodes || 0);
+  const sourceStale = Number(g.stale_nodes || 0);
+  const sourceSim = Number(g.simulated_nodes || 0);
+  const heaterEqCluster = Number(g.cluster_heater_equivalent_w || 0);
+  const heaterEqTarget = Number(g.heater_equivalent_target_w || 0);
 
   kpiHero.textContent = `${avgHot.toFixed(1)}\u00B0C`;
   kpiHeroSub.textContent = `Trend: ${formatSigned(trend)}\u00B0C/min`;
@@ -458,6 +484,11 @@ function updatePanel(payload) {
       kpiPowerDelta.textContent = "-- vs last hour";
     }
   }
+  if (kpiSourceReal) kpiSourceReal.textContent = String(sourceReal);
+  if (kpiSourceStale) kpiSourceStale.textContent = String(sourceStale);
+  if (kpiSourceSim) kpiSourceSim.textContent = String(sourceSim);
+  if (kpiHeaterEq) kpiHeaterEq.textContent = `${heaterEqCluster.toFixed(1)} W`;
+  if (kpiHeaterTarget) kpiHeaterTarget.textContent = `target ${heaterEqTarget.toFixed(1)} W/rack`;
 
   kpiAiStatus.textContent = aiStatus.replaceAll("_", " ");
   kpiAiStatus.classList.remove("neutral", "nominal", "warning", "critical");
@@ -487,6 +518,11 @@ function updatePanel(payload) {
     const fanB = Number(g.fanB_pwm || cdu.fanB_pwm || 0);
     kpiCduFans.textContent = `${fanA} / ${fanB}`;
   }
+  if (kpiCduPeltiers) {
+    const peltierA = Boolean(g.peltierA_on ?? cdu.peltierA_on);
+    const peltierB = Boolean(g.peltierB_on ?? cdu.peltierB_on);
+    kpiCduPeltiers.textContent = `${peltierA ? "ON" : "OFF"} / ${peltierB ? "ON" : "OFF"}`;
+  }
   if (kpiCduStatus) {
     const online = Boolean(g.cdu_online || cdu.online);
     kpiCduStatus.textContent = online ? "online" : "fallback";
@@ -498,8 +534,25 @@ function updatePanel(payload) {
   payload.racks.forEach((rack) => {
     const tr = document.createElement("tr");
     const status = rack.status || (rack.anomaly ? "critical" : "normal");
-    const temp = Number(rack.temp_hot || 0);
-    const width = (tempRatio(temp) * 100).toFixed(1);
+    const displayTempRaw = Number(rack.temp_hot);
+    const virtualTempRaw = Number(rack.temp_hot_virtual ?? rack.temp_hot);
+    const displayTemp = Number.isFinite(displayTempRaw) ? displayTempRaw : 0;
+    const virtualTemp = Number.isFinite(virtualTempRaw) ? virtualTempRaw : displayTemp;
+    const width = (tempRatio(virtualTemp) * 100).toFixed(1);
+    const sourceStatus = String(rack.source_status || (rack.is_real ? "real" : "simulated"));
+    const sourceBlend = Number(rack.source_blend || 0);
+    const sourceMeta =
+      sourceStatus === "stale"
+        ? `${Math.round(sourceBlend * 100)}% blend`
+        : sourceStatus === "real"
+          ? "live telemetry"
+          : "model fallback";
+    const realTempLabel = formatTempValue(rack.temp_hot_real);
+    const virtualTempLabel = formatTempValue(rack.temp_hot_virtual);
+    const heaterRealLabel = formatPowerValue(rack.heater_real_w);
+    const heaterEqLabel = formatPowerValue(rack.heater_equivalent_w);
+    const heaterScale = Number(rack.heater_scale_factor || 1);
+    const coolingLabel = `F ${Number(rack.fan_pwm || 0)}`;
 
     if (rack.anomaly) tr.classList.add("alert");
     if (rack.is_real) tr.classList.add("real");
@@ -507,16 +560,35 @@ function updatePanel(payload) {
 
     tr.innerHTML = `
       <td>${rack.label}</td>
-      <td><span class="status-dot ${status}"></span>${toStatusLabel(status)}</td>
-      <td>${temp.toFixed(1)}</td>
-      <td class="heat-cell">
-        <div class="temp-bar">
-          <div class="temp-fill" style="width:${width}%"></div>
-          <span class="temp-val">${temp.toFixed(1)}\u00B0C</span>
+      <td>
+        <div class="cell-stack tight">
+          <span class="source-chip ${sourceStatus}"><span class="status-dot ${status}"></span>${toSourceLabel(sourceStatus)}</span>
+          <span class="subtle-tag">${sourceMeta}</span>
         </div>
       </td>
-      <td>${rack.fan_pwm}</td>
-      <td>${rack.pump_pwm}</td>
+      <td class="heat-cell">
+        <div class="cell-stack">
+          <div class="micro-line"><span>Real</span><strong>${realTempLabel}</strong></div>
+          <div class="micro-line"><span>Virtual</span><strong>${virtualTempLabel}</strong></div>
+        </div>
+        <div class="temp-bar compact">
+          <div class="temp-fill" style="width:${width}%"></div>
+          <span class="temp-val">${displayTemp.toFixed(1)}\u00B0C -> ${virtualTemp.toFixed(1)}\u00B0C</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-stack tight">
+          <div class="micro-line"><span>Real</span><strong>${heaterRealLabel}</strong></div>
+          <div class="micro-line"><span>Eq</span><strong>${heaterEqLabel}</strong></div>
+          <span class="subtle-tag">x${heaterScale.toFixed(2)}</span>
+        </div>
+      </td>
+      <td>
+        <div class="cell-stack tight">
+          <div class="micro-line"><span>${coolingLabel}</span></div>
+          <span class="subtle-tag">${toStatusLabel(status)}</span>
+        </div>
+      </td>
       <td><span class="mode-chip">${compactMode(rack.mode)}</span></td>
     `;
 
@@ -534,18 +606,18 @@ function updatePanel(payload) {
 function handleTwinMessage(payload) {
   criticalRackLabel = String(payload?.global?.critical_rack || "");
   updatePanel(payload);
+  if (!Array.isArray(payload?.racks)) return;
   payload.racks.forEach((rack) => {
     const slot = rackSlots[rack.rack_id];
     if (!slot) return;
     slot.label = rack.label;
-    slot.targetHot = Number(rack.temp_hot);
-    slot.targetLiquid = Number(rack.temp_liquid);
+    slot.targetHot = Number(rack.temp_hot_virtual ?? rack.temp_hot);
+    slot.targetLiquid = Number(rack.temp_liquid_virtual ?? rack.temp_liquid);
     slot.targetAnomaly = Boolean(rack.anomaly);
     slot.fanPwm = Number(rack.fan_pwm || 0);
-    slot.pumpPwm = Number(rack.pump_pwm || 0);
     slot.mode = rack.mode || "n/a";
     slot.status = rack.status || "normal";
-    slot.isReal = Boolean(rack.is_real);
+    slot.isReal = String(rack.source_status || "") === "real";
     slot.isCritical = slot.label === criticalRackLabel;
   });
 }
@@ -609,7 +681,8 @@ function connectWebSocket() {
     socket.close();
   }
 
-  socket = new WebSocket(`ws://${wsConfig.host}:${wsConfig.port}`);
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  socket = new WebSocket(`${protocol}://${wsConfig.host}:${wsConfig.port}`);
 
   socket.onopen = () => {
     setConnection(true);

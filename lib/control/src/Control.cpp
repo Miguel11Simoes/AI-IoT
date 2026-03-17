@@ -19,10 +19,9 @@ void ControlManager::begin() {
   lastSampleMs_ = millis();
 }
 
-ControlManager::Actuation ControlManager::compute(float tHotC, float tLiquidC, bool sensorOk,
-                                                  uint32_t nowMs) {
+ControlManager::Actuation ControlManager::compute(float tHotC, bool sensorOk, uint32_t nowMs) {
   Actuation out{};
-  uint8_t heat = localHeatFromTemp(tHotC, tLiquidC);
+  uint8_t heat = localHeatFromTemp(tHotC);
 
   float riseRate = 0.0f;
   if (lastSampleMs_ > 0 && nowMs > lastSampleMs_) {
@@ -48,6 +47,7 @@ ControlManager::Actuation ControlManager::compute(float tHotC, float tLiquidC, b
 
     if (remote_.anomaly) {
       heat = config_.minHeatPwm;
+      out.localAnomaly = true;
     }
   }
 
@@ -88,6 +88,8 @@ void ControlManager::setRemoteSetpoints(const RemoteSetpoints& remote, uint32_t 
 
 uint8_t ControlManager::heatPwm() const { return appliedHeatPwm_; }
 
+bool ControlManager::heaterOn() const { return heaterOn_; }
+
 uint8_t ControlManager::clampPwm(int value, uint8_t minV, uint8_t maxV) const {
   if (value < minV) {
     return minV;
@@ -98,9 +100,8 @@ uint8_t ControlManager::clampPwm(int value, uint8_t minV, uint8_t maxV) const {
   return static_cast<uint8_t>(value);
 }
 
-uint8_t ControlManager::localHeatFromTemp(float tHotC, float tLiquidC) const {
-  const float delta = tHotC - tLiquidC;
-  const int raw = static_cast<int>(190.0f - (tHotC - 40.0f) * 4.0f - delta * 2.5f);
+uint8_t ControlManager::localHeatFromTemp(float tHotC) const {
+  const int raw = static_cast<int>(190.0f - (tHotC - 40.0f) * 5.0f);
   return clampPwm(raw, config_.minHeatPwm, config_.maxHeatPwm);
 }
 

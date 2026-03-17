@@ -82,10 +82,6 @@
 #ifndef LIQUID_TO_AMBIENT_COEFF
 #define LIQUID_TO_AMBIENT_COEFF 0.11
 #endif
-#ifndef FLOW_COOLING_COEFF
-#define FLOW_COOLING_COEFF 0.24
-#endif
-
 #ifndef ANOMALY_TEMP_C
 #define ANOMALY_TEMP_C 80
 #endif
@@ -94,6 +90,9 @@
 #endif
 #ifndef HEAT_WINDOW_MS
 #define HEAT_WINDOW_MS 2000
+#endif
+#ifndef HEATER_RATED_POWER_W
+#define HEATER_RATED_POWER_W 1.44
 #endif
 
 #ifndef ONE_WIRE_PIN
@@ -107,7 +106,25 @@
 #define CDU_FAN_A_PIN 10
 #endif
 #ifndef CDU_FAN_B_PIN
-#define CDU_FAN_B_PIN 11
+#define CDU_FAN_B_PIN 255
+#endif
+#ifndef CDU_PELTIER_A_PIN
+#define CDU_PELTIER_A_PIN 255
+#endif
+#ifndef CDU_PELTIER_B_PIN
+#define CDU_PELTIER_B_PIN 255
+#endif
+#ifndef CDU_PELTIER_FAN_A_PIN
+#define CDU_PELTIER_FAN_A_PIN 255
+#endif
+#ifndef CDU_PELTIER_FAN_B_PIN
+#define CDU_PELTIER_FAN_B_PIN 255
+#endif
+#ifndef CDU_PELTIER_ACTIVE_HIGH
+#define CDU_PELTIER_ACTIVE_HIGH 1
+#endif
+#ifndef CDU_PELTIER_FAN_ACTIVE_HIGH
+#define CDU_PELTIER_FAN_ACTIVE_HIGH 1
 #endif
 
 struct RackNodeConfig {
@@ -132,10 +149,10 @@ struct RackNodeConfig {
   float hotToLiquidCoeff;
   float hotToAmbientCoeff;
   float liquidToAmbientCoeff;
-  float flowCoolingCoeff;
   float anomalyTempC;
   float criticalTempC;
   uint16_t heatWindowMs;
+  float heaterRatedPowerW;
 };
 
 inline RackNodeConfig loadRackConfig() {
@@ -161,10 +178,10 @@ inline RackNodeConfig loadRackConfig() {
   cfg.hotToLiquidCoeff = static_cast<float>(HOT_TO_LIQUID_COEFF);
   cfg.hotToAmbientCoeff = static_cast<float>(HOT_TO_AMBIENT_COEFF);
   cfg.liquidToAmbientCoeff = static_cast<float>(LIQUID_TO_AMBIENT_COEFF);
-  cfg.flowCoolingCoeff = static_cast<float>(FLOW_COOLING_COEFF);
   cfg.anomalyTempC = static_cast<float>(ANOMALY_TEMP_C);
   cfg.criticalTempC = static_cast<float>(CRITICAL_TEMP_C);
   cfg.heatWindowMs = static_cast<uint16_t>(HEAT_WINDOW_MS);
+  cfg.heaterRatedPowerW = static_cast<float>(HEATER_RATED_POWER_W);
   return cfg;
 }
 
@@ -178,6 +195,12 @@ struct CduConfig {
   const char* edgeWsPath;
   uint8_t fanAPin;
   uint8_t fanBPin;
+  uint8_t peltierAPin;
+  uint8_t peltierBPin;
+  uint8_t peltierFanAPin;
+  uint8_t peltierFanBPin;
+  bool peltierActiveHigh;
+  bool peltierFanActiveHigh;
   uint32_t cycleIntervalMs;
   uint32_t networkTimeoutMs;
   uint32_t remoteCmdTtlMs;
@@ -194,6 +217,12 @@ inline CduConfig loadCduConfig() {
   cfg.edgeWsPath = EDGE_WS_PATH;
   cfg.fanAPin = static_cast<uint8_t>(CDU_FAN_A_PIN);
   cfg.fanBPin = static_cast<uint8_t>(CDU_FAN_B_PIN);
+  cfg.peltierAPin = static_cast<uint8_t>(CDU_PELTIER_A_PIN);
+  cfg.peltierBPin = static_cast<uint8_t>(CDU_PELTIER_B_PIN);
+  cfg.peltierFanAPin = static_cast<uint8_t>(CDU_PELTIER_FAN_A_PIN);
+  cfg.peltierFanBPin = static_cast<uint8_t>(CDU_PELTIER_FAN_B_PIN);
+  cfg.peltierActiveHigh = (CDU_PELTIER_ACTIVE_HIGH != 0);
+  cfg.peltierFanActiveHigh = (CDU_PELTIER_FAN_ACTIVE_HIGH != 0);
   cfg.cycleIntervalMs = static_cast<uint32_t>(CYCLE_INTERVAL_MS);
   cfg.networkTimeoutMs = static_cast<uint32_t>(NETWORK_TIMEOUT_MS);
   cfg.remoteCmdTtlMs = static_cast<uint32_t>(REMOTE_CMD_TTL_MS);

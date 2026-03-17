@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <math.h>
 
 #include "EdgeNetwork.h"
 #include "ProjectConfig.h"
@@ -21,6 +22,8 @@ uint8_t rampPwm(uint8_t current, uint8_t target, uint8_t step = 5) {
   }
   return current;
 }
+
+bool pinAvailable(uint8_t pin) { return pin != 0xFF; }
 }  // namespace
 
 #if DEVICE_ROLE == ROLE_RACK
@@ -48,7 +51,6 @@ SensorManager::Config makeSensorConfig(const RackNodeConfig& cfg) {
   out.hotToLiquidCoeff = cfg.hotToLiquidCoeff;
   out.hotToAmbientCoeff = cfg.hotToAmbientCoeff;
   out.liquidToAmbientCoeff = cfg.liquidToAmbientCoeff;
-  out.flowCoolingCoeff = cfg.flowCoolingCoeff;
   return out;
 }
 
@@ -126,7 +128,11 @@ void printPeriodicReport(uint32_t nowMs) {
   Serial.print(" t_hot=");
   Serial.print(gLastSensor.tHotC, 2);
   Serial.print(" t_liquid=");
-  Serial.print(gLastSensor.tLiquidC, 2);
+  if (gLastSensor.liquidAvailable) {
+    Serial.print(gLastSensor.tLiquidC, 2);
+  } else {
+    Serial.print("n/a");
+  }
   Serial.print(" heat=");
   Serial.print(gLastActuation.heatPwm);
   Serial.print(" ack=");
@@ -137,6 +143,28 @@ void printPeriodicReport(uint32_t nowMs) {
   Serial.print(gFailureCounter);
   Serial.print(" mode=");
   Serial.println(gLastCommand.mode);
+}
+
+const char* telemetryModeForReadout(const SensorReadout& readout) {
+  if (readout.hotSource == TemperatureSource::FALLBACK_SIMULATED) {
+    return "sensor_fallback";
+  }
+  if (readout.hotSource == TemperatureSource::SIMULATED) {
+    return "simulated";
+  }
+  if (readout.hotSource == TemperatureSource::SENSOR &&
+      readout.liquidSource == TemperatureSource::UNAVAILABLE) {
+    return "measured_hot_only";
+  }
+  if (readout.hotSource == TemperatureSource::SENSOR &&
+      readout.liquidSource == TemperatureSource::SENSOR) {
+    return "measured";
+  }
+  return "mixed";
+}
+
+float heaterAveragePowerW(uint8_t heatPwm) {
+  return (static_cast<float>(heatPwm) / 255.0f) * gConfig.heaterRatedPowerW;
 }
 }  // namespace
 
@@ -165,22 +193,29 @@ void loop() {
       break;
 
     case NodeState::READ_SENSORS:
-      gLastSensor = gSensors.update(nowMs, 0, gControl.heatPwm(), 0);
+      gLastSensor = gSensors.update(nowMs, 0, gControl.heatPwm());
       transitionTo(NodeState::CONTROL_LOCAL);
       break;
 
     case NodeState::CONTROL_LOCAL: {
       gLastActuation =
-          gControl.compute(gLastSensor.tHotC, gLastSensor.tLiquidC, gLastSensor.sensorOk, nowMs);
+          gControl.compute(gLastSensor.tHotC, gLastSensor.sensorOk, nowMs);
       gControl.apply(gLastActuation, nowMs);
 
       RackTelemetryMessage telemetry{};
       telemetry.rackId = gConfig.rackId;
-      telemetry.tHotC = gLastSensor.tHotC;
-      telemetry.tLiquidC = gLastSensor.tLiquidC;
+      telemetry.tHotRealC = gLastSensor.tHotC;
+      telemetry.tLiquidRealC = gLastSensor.tLiquidC;
+      telemetry.hasLiquidReal = gLastSensor.liquidAvailable;
+      telemetry.tHotSource = temperatureSourceLabel(gLastSensor.hotSource);
+      telemetry.tLiquidSource = temperatureSourceLabel(gLastSensor.liquidSource);
+      telemetry.telemetryMode = telemetryModeForReadout(gLastSensor);
+      telemetry.sensorOk = gLastSensor.sensorOk;
       telemetry.fanLocalPwm = 0;
       telemetry.heatPwm = gLastActuation.heatPwm;
-      telemetry.pumpV = 0;
+      telemetry.heaterOn = gControl.heaterOn();
+      telemetry.heaterRatedPowerW = gConfig.heaterRatedPowerW;
+      telemetry.heaterAvgPowerW = heaterAveragePowerW(gLastActuation.heatPwm);
       telemetry.rssi = gNetwork.rssi();
       telemetry.localAnomaly = gLastActuation.localAnomaly;
       telemetry.tsMs = nowMs;
@@ -270,6 +305,10 @@ uint8_t gFanACurrent = 160;
 uint8_t gFanBCurrent = 160;
 uint8_t gFanATarget = 160;
 uint8_t gFanBTarget = 160;
+bool gPeltierACurrent = false;
+bool gPeltierBCurrent = false;
+bool gPeltierATarget = false;
+bool gPeltierBTarget = false;
 float gSupplyA = 29.0f;
 float gSupplyB = 30.0f;
 float gSupplyTarget = 29.5f;
@@ -278,23 +317,57 @@ String gPayload;
 String gResponse;
 CduCommandMessage gLastCommand{};
 
+uint8_t applyFan(uint8_t pin, uint8_t current, uint8_t target) {
+  if (!pinAvailable(pin)) {
+    return 0;
+  }
+  const uint8_t next = rampPwm(current, target, 4);
+  analogWrite(pin, next);
+  return next;
+}
+
 void applyFans() {
-  gFanACurrent = rampPwm(gFanACurrent, gFanATarget, 4);
-  gFanBCurrent = rampPwm(gFanBCurrent, gFanBTarget, 4);
-  analogWrite(gConfig.fanAPin, gFanACurrent);
-  analogWrite(gConfig.fanBPin, gFanBCurrent);
+  gFanACurrent = applyFan(gConfig.fanAPin, gFanACurrent, gFanATarget);
+  gFanBCurrent = applyFan(gConfig.fanBPin, gFanBCurrent, gFanBTarget);
+}
+
+void writePeltier(uint8_t pin, bool enabled) {
+  if (!pinAvailable(pin)) {
+    return;
+  }
+  const bool activeHigh = gConfig.peltierActiveHigh;
+  digitalWrite(pin, (enabled == activeHigh) ? HIGH : LOW);
+}
+
+void writePeltierFan(uint8_t pin, bool enabled) {
+  if (!pinAvailable(pin)) {
+    return;
+  }
+  const bool activeHigh = gConfig.peltierFanActiveHigh;
+  digitalWrite(pin, (enabled == activeHigh) ? HIGH : LOW);
+}
+
+void applyPeltiers() {
+  gPeltierACurrent = gPeltierATarget;
+  gPeltierBCurrent = gPeltierBTarget;
+  writePeltier(gConfig.peltierAPin, gPeltierACurrent);
+  writePeltier(gConfig.peltierBPin, gPeltierBCurrent);
+  writePeltierFan(gConfig.peltierFanAPin, gPeltierACurrent);
+  writePeltierFan(gConfig.peltierFanBPin, gPeltierBCurrent);
 }
 
 void updateVirtualSupply(float dtSec) {
-  const float coolA = (static_cast<float>(gFanACurrent) / 255.0f) * 1.8f;
-  const float coolB = (static_cast<float>(gFanBCurrent) / 255.0f) * 1.8f;
+  const float peltierBoostA = gPeltierACurrent ? 0.95f : 0.0f;
+  const float peltierBoostB = gPeltierBCurrent ? 0.95f : 0.0f;
+  const float coolA = (static_cast<float>(gFanACurrent) / 255.0f) * 1.8f + peltierBoostA;
+  const float coolB = (static_cast<float>(gFanBCurrent) / 255.0f) * 1.8f + peltierBoostB;
   const float loadA = 1.3f;
   const float loadB = 1.3f;
 
   gSupplyA += (loadA - coolA) * 0.12f * dtSec;
   gSupplyB += (loadB - coolB) * 0.12f * dtSec;
-  gSupplyA = constrain(gSupplyA, 22.0f, 45.0f);
-  gSupplyB = constrain(gSupplyB, 22.0f, 45.0f);
+  gSupplyA = constrain(gSupplyA, 18.0f, 45.0f);
+  gSupplyB = constrain(gSupplyB, 18.0f, 45.0f);
 }
 
 void applyFallbackIfStale(uint32_t nowMs) {
@@ -306,15 +379,47 @@ void applyFallbackIfStale(uint32_t nowMs) {
   const int correction = static_cast<int>(err * 15.0f);
   gFanATarget = static_cast<uint8_t>(constrain(160 + correction, 120, 220));
   gFanBTarget = static_cast<uint8_t>(constrain(160 + correction, 120, 220));
+  gPeltierATarget = gSupplyA >= (gSupplyTarget + 3.0f);
+  gPeltierBTarget = gSupplyB >= (gSupplyTarget + 3.0f);
 }
 }  // namespace
 
 void setup() {
   Serial.begin(115200);
-  pinMode(gConfig.fanAPin, OUTPUT);
-  pinMode(gConfig.fanBPin, OUTPUT);
-  analogWrite(gConfig.fanAPin, gFanACurrent);
-  analogWrite(gConfig.fanBPin, gFanBCurrent);
+  if (pinAvailable(gConfig.fanAPin)) {
+    pinMode(gConfig.fanAPin, OUTPUT);
+  }
+  if (pinAvailable(gConfig.fanBPin)) {
+    pinMode(gConfig.fanBPin, OUTPUT);
+  }
+  if (pinAvailable(gConfig.peltierAPin)) {
+    pinMode(gConfig.peltierAPin, OUTPUT);
+  }
+  if (pinAvailable(gConfig.peltierBPin)) {
+    pinMode(gConfig.peltierBPin, OUTPUT);
+  }
+  if (pinAvailable(gConfig.peltierFanAPin)) {
+    pinMode(gConfig.peltierFanAPin, OUTPUT);
+  }
+  if (pinAvailable(gConfig.peltierFanBPin)) {
+    pinMode(gConfig.peltierFanBPin, OUTPUT);
+  }
+  if (pinAvailable(gConfig.fanAPin)) {
+    analogWrite(gConfig.fanAPin, gFanACurrent);
+  } else {
+    gFanACurrent = 0;
+    gFanATarget = 0;
+  }
+  if (pinAvailable(gConfig.fanBPin)) {
+    analogWrite(gConfig.fanBPin, gFanBCurrent);
+  } else {
+    gFanBCurrent = 0;
+    gFanBTarget = 0;
+  }
+  writePeltier(gConfig.peltierAPin, false);
+  writePeltier(gConfig.peltierBPin, false);
+  writePeltierFan(gConfig.peltierFanAPin, false);
+  writePeltierFan(gConfig.peltierFanBPin, false);
   gNetwork.begin();
   const uint32_t nowMs = millis();
   gCycleStartedMs = nowMs;
@@ -325,11 +430,16 @@ void setup() {
 
 void loop() {
   const uint32_t nowMs = millis();
-  const float dtSec = static_cast<float>(max<int32_t>(1, nowMs - gLastLoopMs)) / 1000.0f;
+  uint32_t elapsedMs = nowMs - gLastLoopMs;
+  if (elapsedMs == 0 || elapsedMs > 5000U) {
+    elapsedMs = 1U;
+  }
+  const float dtSec = static_cast<float>(elapsedMs) / 1000.0f;
   gLastLoopMs = nowMs;
   updateVirtualSupply(dtSec);
   applyFallbackIfStale(nowMs);
   applyFans();
+  applyPeltiers();
 
   switch (gState) {
     case CduStateFsm::INIT:
@@ -341,6 +451,8 @@ void loop() {
       telemetry.cduId = gConfig.cduId;
       telemetry.fanAPwm = gFanACurrent;
       telemetry.fanBPwm = gFanBCurrent;
+      telemetry.peltierAOn = gPeltierACurrent;
+      telemetry.peltierBOn = gPeltierBCurrent;
       telemetry.tSupplyA = gSupplyA;
       telemetry.tSupplyB = gSupplyB;
       telemetry.tsMs = nowMs;
@@ -376,7 +488,11 @@ void loop() {
     case CduStateFsm::APPLY_CMD:
       gFanATarget = gLastCommand.fanAPwm;
       gFanBTarget = gLastCommand.fanBPwm;
-      gSupplyTarget = gLastCommand.tSupplyTarget;
+      gPeltierATarget = gLastCommand.peltierAOn;
+      gPeltierBTarget = gLastCommand.peltierBOn;
+      if (gLastCommand.hasSupplyTarget && isfinite(gLastCommand.tSupplyTarget)) {
+        gSupplyTarget = constrain(gLastCommand.tSupplyTarget, 18.0f, 45.0f);
+      }
       gLastCmdMs = nowMs;
       gState = CduStateFsm::WAIT_NEXT;
       break;

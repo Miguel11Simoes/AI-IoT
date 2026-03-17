@@ -30,15 +30,16 @@ class ControlManager {
   explicit ControlManager(const Config& config);
 
   void begin();
-  Actuation compute(float tHotC, float tLiquidC, bool sensorOk, uint32_t nowMs);
+  Actuation compute(float tHotC, bool sensorOk, uint32_t nowMs);
   void apply(const Actuation& actuation, uint32_t nowMs);
   void service(uint32_t nowMs);
   void setRemoteSetpoints(const RemoteSetpoints& remote, uint32_t nowMs);
   uint8_t heatPwm() const;
+  bool heaterOn() const;
 
  private:
   uint8_t clampPwm(int value, uint8_t minV, uint8_t maxV) const;
-  uint8_t localHeatFromTemp(float tHotC, float tLiquidC) const;
+  uint8_t localHeatFromTemp(float tHotC) const;
   bool remoteFresh(uint32_t nowMs) const;
 
   Config config_;

@@ -1,10 +1,22 @@
 #include "Sensors.h"
 
+#include <math.h>
+
+namespace {
+TemperatureSource simulatedSource(bool nominalSimulation) {
+  return nominalSimulation ? TemperatureSource::SIMULATED : TemperatureSource::FALLBACK_SIMULATED;
+}
+}  // namespace
+
 SensorManager::SensorManager(const Config& config)
     : config_(config),
       oneWire_(config.oneWirePin),
       dallas_(&oneWire_),
       lastUpdateMs_(0),
+      conversionReadyAtMs_(0),
+      conversionPending_(false),
+      haveHardwareReadout_(false),
+      lastHardwareReadout_(),
       simulatedHotC_(config.initialHotC),
       simulatedLiquidC_(config.initialLiquidC) {}
 
@@ -15,22 +27,26 @@ void SensorManager::begin() {
 
   if (!config_.simulationMode) {
     dallas_.begin();
-    dallas_.setResolution(10);
+    dallas_.setResolution(kSensorResolutionBits);
+    dallas_.setWaitForConversion(false);
+    dallas_.requestTemperatures();
+    conversionReadyAtMs_ = lastUpdateMs_ + kConversionTimeMs;
+    conversionPending_ = true;
+    haveHardwareReadout_ = false;
   }
 }
 
-SensorReadout SensorManager::update(uint32_t nowMs, uint8_t fanPwm, uint8_t heatPwm,
-                                    uint8_t pumpPwm) {
+SensorReadout SensorManager::update(uint32_t nowMs, uint8_t fanPwm, uint8_t heatPwm) {
   if (config_.simulationMode) {
-    return updateSimulated(nowMs, fanPwm, heatPwm, pumpPwm, true);
+    return updateSimulated(nowMs, fanPwm, heatPwm, true);
   }
-  return updateFromHardware(nowMs, fanPwm, heatPwm, pumpPwm);
+  return updateFromHardware(nowMs, fanPwm, heatPwm);
 }
 
 bool SensorManager::simulationMode() const { return config_.simulationMode; }
 
 SensorReadout SensorManager::updateSimulated(uint32_t nowMs, uint8_t fanPwm, uint8_t heatPwm,
-                                             uint8_t pumpPwm, bool sensorOkValue) {
+                                             bool sensorOkValue) {
   const uint32_t elapsedMs = nowMs - lastUpdateMs_;
   float dtSec = static_cast<float>(elapsedMs) / 1000.0f;
   if (dtSec < 0.05f) {
@@ -43,7 +59,6 @@ SensorReadout SensorManager::updateSimulated(uint32_t nowMs, uint8_t fanPwm, uin
 
   const float fanNorm = static_cast<float>(fanPwm) / 255.0f;
   const float heatNorm = static_cast<float>(heatPwm) / 255.0f;
-  const float flowNorm = static_cast<float>(pumpPwm) / 255.0f;
 
   const float hotMinusLiquid = simulatedHotC_ - simulatedLiquidC_;
   const float hotMinusAmbient = simulatedHotC_ - config_.ambientC;
@@ -52,13 +67,12 @@ SensorReadout SensorManager::updateSimulated(uint32_t nowMs, uint8_t fanPwm, uin
   const float hotToLiquid = config_.hotToLiquidCoeff * hotMinusLiquid;
   const float hotToAmbient =
       config_.hotToAmbientCoeff * (0.2f + fanNorm) * hotMinusAmbient;
-  const float flowCooling = config_.flowCoolingCoeff * flowNorm * hotMinusLiquid;
   const float liquidToAmbient =
       config_.liquidToAmbientCoeff * (0.2f + fanNorm) * liquidMinusAmbient;
 
   const float heatGain = config_.heatGainCPerSec * (0.45f + heatNorm * 1.2f);
-  const float dHot = heatGain - hotToAmbient - hotToLiquid - (0.45f * flowCooling);
-  const float dLiquid = hotToLiquid + flowCooling - liquidToAmbient;
+  const float dHot = heatGain - hotToAmbient - hotToLiquid;
+  const float dLiquid = hotToLiquid - liquidToAmbient;
 
   simulatedHotC_ += dHot * dtSec;
   simulatedLiquidC_ += dLiquid * dtSec;
@@ -74,17 +88,32 @@ SensorReadout SensorManager::updateSimulated(uint32_t nowMs, uint8_t fanPwm, uin
   out.tHotC = simulatedHotC_;
   out.tLiquidC = simulatedLiquidC_;
   out.sensorOk = sensorOkValue;
-  out.virtualFlow = flowNorm;
+  out.liquidAvailable = true;
+  out.hotSource = simulatedSource(sensorOkValue);
+  out.liquidSource = simulatedSource(sensorOkValue);
   return out;
 }
 
-SensorReadout SensorManager::updateFromHardware(uint32_t nowMs, uint8_t fanPwm, uint8_t heatPwm,
-                                                uint8_t pumpPwm) {
-  dallas_.requestTemperatures();
+SensorReadout SensorManager::updateFromHardware(uint32_t nowMs, uint8_t fanPwm, uint8_t heatPwm) {
+  if (!conversionPending_) {
+    dallas_.requestTemperatures();
+    conversionReadyAtMs_ = nowMs + kConversionTimeMs;
+    conversionPending_ = true;
+  }
+
+  if (static_cast<int32_t>(nowMs - conversionReadyAtMs_) < 0) {
+    if (haveHardwareReadout_) {
+      return lastHardwareReadout_;
+    }
+    return updateSimulated(nowMs, fanPwm, heatPwm, false);
+  }
+
   const float hot = dallas_.getTempCByIndex(0);
   const float liquid = dallas_.getTempCByIndex(1);
-  const float fanNorm = static_cast<float>(fanPwm) / 255.0f;
-  const float flowNorm = static_cast<float>(pumpPwm) / 255.0f;
+
+  dallas_.requestTemperatures();
+  conversionReadyAtMs_ = nowMs + kConversionTimeMs;
+  conversionPending_ = true;
 
   const bool hotValid = validTemperature(hot);
   const bool liquidValid = validTemperature(liquid);
@@ -92,13 +121,6 @@ SensorReadout SensorManager::updateFromHardware(uint32_t nowMs, uint8_t fanPwm, 
     simulatedHotC_ = hot;
     if (liquidValid) {
       simulatedLiquidC_ = liquid;
-    } else {
-      // With one DS18B20 physically mounted, estimate liquid temperature as a
-      // damped virtual state tied to hot temperature and cooling effort.
-      float targetDelta = 4.8f - (1.7f * flowNorm) - (0.9f * fanNorm);
-      targetDelta = clampFloat(targetDelta, 2.0f, 8.5f);
-      const float targetLiquid = simulatedHotC_ - targetDelta;
-      simulatedLiquidC_ += (targetLiquid - simulatedLiquidC_) * 0.22f;
     }
     float liqMin = config_.ambientC - 2.0f;
     float liqMax = simulatedHotC_ - 0.1f;
@@ -110,16 +132,24 @@ SensorReadout SensorManager::updateFromHardware(uint32_t nowMs, uint8_t fanPwm, 
 
     SensorReadout out{};
     out.tHotC = simulatedHotC_;
-    out.tLiquidC = simulatedLiquidC_;
+    out.tLiquidC = liquidValid ? simulatedLiquidC_ : 0.0f;
     out.sensorOk = true;
-    out.virtualFlow = flowNorm;
+    out.liquidAvailable = liquidValid;
+    out.hotSource = TemperatureSource::SENSOR;
+    out.liquidSource = liquidValid ? TemperatureSource::SENSOR : TemperatureSource::UNAVAILABLE;
+    lastHardwareReadout_ = out;
+    haveHardwareReadout_ = true;
     return out;
   }
 
-  return updateSimulated(nowMs, fanPwm, heatPwm, pumpPwm, false);
+  haveHardwareReadout_ = false;
+  return updateSimulated(nowMs, fanPwm, heatPwm, false);
 }
 
 bool SensorManager::validTemperature(float value) const {
+  if (!isfinite(value)) {
+    return false;
+  }
   if (value <= -100.0f || value >= 130.0f) {
     return false;
   }
@@ -137,4 +167,20 @@ float SensorManager::clampFloat(float value, float minV, float maxV) const {
     return maxV;
   }
   return value;
+}
+
+const char* temperatureSourceLabel(TemperatureSource source) {
+  switch (source) {
+    case TemperatureSource::SENSOR:
+      return "sensor";
+    case TemperatureSource::ESTIMATED:
+      return "estimated";
+    case TemperatureSource::FALLBACK_SIMULATED:
+      return "fallback_simulated";
+    case TemperatureSource::UNAVAILABLE:
+      return "unavailable";
+    case TemperatureSource::SIMULATED:
+    default:
+      return "simulated";
+  }
 }

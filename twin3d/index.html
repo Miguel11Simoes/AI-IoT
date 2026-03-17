@@ -33,11 +33,11 @@
 
         <section class="panel-card grid-kpi">
           <article>
-            <span>Global Avg</span>
+            <span>Global Avg (Virtual)</span>
             <strong id="kpi-avg">--</strong>
           </article>
           <article>
-            <span>Global Max</span>
+            <span>Global Max (Virtual)</span>
             <strong id="kpi-max">--</strong>
           </article>
           <article>
@@ -48,6 +48,26 @@
             <span>Total Cooling Power</span>
             <strong id="kpi-power">--</strong>
             <small id="kpi-power-delta">--</small>
+          </article>
+        </section>
+
+        <section class="panel-card grid-kpi source-kpi">
+          <article>
+            <span>Real</span>
+            <strong id="kpi-source-real">--</strong>
+          </article>
+          <article>
+            <span>Stale</span>
+            <strong id="kpi-source-stale">--</strong>
+          </article>
+          <article>
+            <span>Simulated</span>
+            <strong id="kpi-source-sim">--</strong>
+          </article>
+          <article>
+            <span>Heater Eq</span>
+            <strong id="kpi-heater-eq">--</strong>
+            <small id="kpi-heater-target">--</small>
           </article>
         </section>
 
@@ -93,6 +113,10 @@
             <span>Fan A / Fan B</span>
             <strong id="kpi-cdu-fans">--</strong>
           </div>
+          <div class="ai-row">
+            <span>Peltier A / B</span>
+            <strong id="kpi-cdu-peltiers">--</strong>
+          </div>
         </section>
 
         <section class="panel-card legend-wrap">
@@ -113,11 +137,10 @@
               <thead>
                 <tr>
                   <th>Rack</th>
-                  <th>Status</th>
-                  <th>Hot &deg;C</th>
-                  <th>Thermal</th>
-                  <th>Fan</th>
-                  <th>Pump</th>
+                  <th>Source</th>
+                  <th>Real / Virtual</th>
+                  <th>Heater W</th>
+                  <th>Cooling</th>
                   <th>Mode</th>
                 </tr>
               </thead>

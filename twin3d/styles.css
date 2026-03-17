@@ -351,47 +351,36 @@ th {
 
 th:nth-child(1),
 td:nth-child(1) {
-  width: 12%;
+  width: 10%;
 }
 
 th:nth-child(2),
 td:nth-child(2) {
-  width: 14%;
+  width: 16%;
 }
 
 th:nth-child(3),
 td:nth-child(3) {
-  width: 10%;
+  width: 29%;
 }
 
 th:nth-child(4),
 td:nth-child(4) {
-  width: 26%;
+  width: 17%;
 }
 
 th:nth-child(5),
 td:nth-child(5) {
-  width: 10%;
+  width: 13%;
 }
 
 th:nth-child(6),
 td:nth-child(6) {
-  width: 10%;
-}
-
-th:nth-child(7),
-td:nth-child(7) {
-  width: 18%;
+  width: 15%;
 }
 
 tr.alert td {
   color: #ff9ba5;
-}
-
-tr.real td:first-child::after {
-  content: " real";
-  color: var(--accent);
-  font-size: 0.67rem;
 }
 
 #rack-table tr {
@@ -468,6 +457,90 @@ tr.real td:first-child::after {
   background: rgba(31, 49, 64, 0.62);
   font-size: 0.62rem;
   color: #bcd2e6;
+}
+
+.source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(109, 139, 161, 0.35);
+  background: rgba(31, 49, 64, 0.62);
+  font-size: 0.61rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.source-chip .status-dot {
+  margin-right: 0;
+}
+
+.source-chip.real {
+  color: #8ff7c5;
+  border-color: rgba(84, 241, 166, 0.38);
+  background: rgba(28, 158, 103, 0.18);
+}
+
+.source-chip.stale {
+  color: #ffd588;
+  border-color: rgba(255, 200, 93, 0.36);
+  background: rgba(187, 129, 30, 0.18);
+}
+
+.source-chip.simulated {
+  color: #96c7ff;
+  border-color: rgba(98, 161, 235, 0.36);
+  background: rgba(35, 74, 121, 0.2);
+}
+
+.cell-stack {
+  display: grid;
+  gap: 4px;
+}
+
+.cell-stack.tight {
+  gap: 2px;
+}
+
+.micro-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.61rem;
+}
+
+.micro-line strong {
+  font-size: 0.66rem;
+  color: #e3edf6;
+}
+
+.micro-line.muted span,
+.micro-line.muted strong {
+  color: var(--muted);
+}
+
+.subtle-tag {
+  font-size: 0.58rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.temp-bar.compact {
+  height: 10px;
+}
+
+.temp-bar.compact .temp-val {
+  font-size: 0.54rem;
+}
+
+.source-kpi small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.73rem;
 }
 
 @media (max-width: 1100px) {
