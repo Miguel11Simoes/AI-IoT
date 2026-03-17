@@ -3,8 +3,9 @@
 Estado alinhado com o projeto submetido no RMIC:
 
 - Rack R00 e R07: medicao DS18B20 + carga termica por heater 12V/20W.
-- CDU (ESP32-C6): controlo de cooling por fanA/fanB (zonas A/B), Peltier A/B e
-  ventoinhas de dissipador quente dos Peltiers.
+- CDU (ESP32-C6): controlo de cooling por fanA/fanB (zonas A/B) e Peltier A/B.
+- As ventoinhas dos dissipadores das Peltiers ligam no mesmo ramo de potencia de cada
+  modulo, sem GPIO dedicado.
 - Servidor: coordena setpoints entre racks e CDU via WebSocket.
 
 ## 1) Pinout oficial atual
@@ -26,8 +27,8 @@ Notas:
 
 - `GPIO6`  -> PWM do driver fan zona A (DFR0332 ou equivalente)
 - `GPIO18` -> sinal de enable do modulo Peltier A (active-high)
-- `GPIO20` -> sinal de enable da ventoinha de dissipador quente do Peltier A (active-high)
 - `GND ESP32-C6` -> `GND` comum dos drivers
+- ventoinha do dissipador da Peltier A -> mesmo ramo de potencia comutado do Peltier A
 
 ### CDU (ESP32-C6) — full (2 racks, 2 Peltiers)
 
@@ -35,9 +36,8 @@ Notas:
 - `GPIO7`  -> PWM driver fan zona B
 - `GPIO18` -> enable Peltier A
 - `GPIO19` -> enable Peltier B
-- `GPIO20` -> enable ventoinha dissipador quente Peltier A
-- `GPIO21` -> enable ventoinha dissipador quente Peltier B
 - `GND ESP32-C6` -> `GND` comum
+- ventoinha dissipador Peltier A/B -> mesmo ramo de potencia comutado de cada Peltier
 
 ## 2) Esboco de ligacoes
 
@@ -69,10 +69,13 @@ IRF520 SOURCE/GND -> GND PSU
 ESP8266 GPIO5 -> IRF520 IN/SIG
 ESP8266 GND -> IRF520 GND
 
-Peltier A (+) -> saida do driver Peltier A
-Peltier A (-) -> GND comum
-Peltier fan (+) -> fonte propria ou saida de driver digital
-ESP32-C6 GPIO20 -> enable ventoinha dissipador Peltier A
+MOSFET/driver Peltier A -> ramal comutado A
+ramal comutado A -> buck A -> Peltier A
+ramal comutado A -> ventoinha dissipador Peltier A (12V)
+
+MOSFET/driver Peltier B -> ramal comutado B
+ramal comutado B -> buck B -> Peltier B
+ramal comutado B -> ventoinha dissipador Peltier B (12V)
 
 Todos os GNDs ligados em comum:
 PSU GND + ESP8266 R00/R07 GND + ESP32-C6 GND + drivers
@@ -82,7 +85,7 @@ PSU GND + ESP8266 R00/R07 GND + ESP32-C6 GND + drivers
 
 - Confirmar `ONE_WIRE_PIN=4` e `HEAT_PIN=5` nos racks.
 - Confirmar `CDU_FAN_A_PIN=6` (stage1) ou `CDU_FAN_A_PIN=6`, `CDU_FAN_B_PIN=7` (full).
-- Confirmar `CDU_PELTIER_A_PIN=18`, `CDU_PELTIER_FAN_A_PIN=20` (stage1).
+- Confirmar `CDU_PELTIER_A_PIN=18` (stage1).
 - Confirmar resistor de pull-up `4.7k` no DS18B20.
 - Confirmar topologia low-side correta do IRF520 para o heater.
 - Confirmar driver de corrente adequado para o Peltier (carga ~6A).
@@ -93,6 +96,5 @@ PSU GND + ESP8266 R00/R07 GND + ESP32-C6 GND + drivers
 No rack, o heater e controlado por time-proportioning (`HEAT_WINDOW_MS=2000`),
 comutando ON/OFF digital para proteger o IRF520.
 
-No CDU, a ventoinha de dissipador quente do Peltier (`peltierFanA/B`) liga e desliga
-automaticamente em sincronia com o modulo Peltier respetivo, sem necessitar de comando
-separado do servidor.
+No CDU, a ventoinha de cada Peltier nao e controlada por GPIO.
+Ela liga e desliga por hardware no mesmo ramo de potencia do respetivo modulo Peltier.

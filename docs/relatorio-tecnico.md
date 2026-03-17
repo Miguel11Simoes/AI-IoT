@@ -24,8 +24,7 @@ Racks:
 CDU:
 - controlar fans de zona A/B por PWM (com rampa suave)
 - controlar modulos Peltier A/B (on/off)
-- controlar ventoinhas do dissipador quente de cada Peltier (peltierFanA/B)
-- ventoinhas de Peltier ligam/desligam em sincronia com o modulo Peltier respetivo
+- as ventoinhas do dissipador dos Peltiers seguem por hardware o mesmo ramo de potencia
 - reportar estado de supply (temperatura virtual)
 - fallback local se comando remoto ficar stale
 
@@ -94,7 +93,7 @@ Campos legados:
 
 - setpoint zonal de fan vindo do servidor
 - Peltier A/B ligados quando temperatura de supply excede setpoint + 3 deg C
-- ventoinhas de dissipador quente (peltierFanA/B) seguem o estado do modulo Peltier
+- ventoinhas de dissipador dos Peltiers ligam pelo mesmo ramo de potencia do modulo respetivo
 - fallback local proporcional se comando remoto stale
 - supply target so atualizado quando campo presente no comando e valor finito
 
@@ -107,13 +106,11 @@ Racks (ESP8266 ESP-12E):
 CDU stage1 (ESP32-C6, 1 rack):
 - `CDU_FAN_A_PIN=6`
 - `CDU_PELTIER_A_PIN=18`
-- `CDU_PELTIER_FAN_A_PIN=20`
 - canais B desativados (255)
 
 CDU full (ESP32-C6, 2 racks):
 - `CDU_FAN_A_PIN=6`, `CDU_FAN_B_PIN=7`
 - `CDU_PELTIER_A_PIN=18`, `CDU_PELTIER_B_PIN=19`
-- `CDU_PELTIER_FAN_A_PIN=20`, `CDU_PELTIER_FAN_B_PIN=21`
 
 ## 7) Seguranca eletrica
 
@@ -133,7 +130,7 @@ Coerente com o formulario submetido:
 
 - com 1 DS18B20 por rack, `t_liquid` e estimado
 - medidas de supply sao virtuais (sem sensor de temperatura de agua no CDU)
-- Peltier e peltierFan sem feedback de temperatura propria
+- Peltier sem feedback de temperatura propria
 
 ## 10) Estado final
 

@@ -339,21 +339,11 @@ void writePeltier(uint8_t pin, bool enabled) {
   digitalWrite(pin, (enabled == activeHigh) ? HIGH : LOW);
 }
 
-void writePeltierFan(uint8_t pin, bool enabled) {
-  if (!pinAvailable(pin)) {
-    return;
-  }
-  const bool activeHigh = gConfig.peltierFanActiveHigh;
-  digitalWrite(pin, (enabled == activeHigh) ? HIGH : LOW);
-}
-
 void applyPeltiers() {
   gPeltierACurrent = gPeltierATarget;
   gPeltierBCurrent = gPeltierBTarget;
   writePeltier(gConfig.peltierAPin, gPeltierACurrent);
   writePeltier(gConfig.peltierBPin, gPeltierBCurrent);
-  writePeltierFan(gConfig.peltierFanAPin, gPeltierACurrent);
-  writePeltierFan(gConfig.peltierFanBPin, gPeltierBCurrent);
 }
 
 void updateVirtualSupply(float dtSec) {
@@ -398,12 +388,6 @@ void setup() {
   if (pinAvailable(gConfig.peltierBPin)) {
     pinMode(gConfig.peltierBPin, OUTPUT);
   }
-  if (pinAvailable(gConfig.peltierFanAPin)) {
-    pinMode(gConfig.peltierFanAPin, OUTPUT);
-  }
-  if (pinAvailable(gConfig.peltierFanBPin)) {
-    pinMode(gConfig.peltierFanBPin, OUTPUT);
-  }
   if (pinAvailable(gConfig.fanAPin)) {
     analogWrite(gConfig.fanAPin, gFanACurrent);
   } else {
@@ -418,8 +402,6 @@ void setup() {
   }
   writePeltier(gConfig.peltierAPin, false);
   writePeltier(gConfig.peltierBPin, false);
-  writePeltierFan(gConfig.peltierFanAPin, false);
-  writePeltierFan(gConfig.peltierFanBPin, false);
   gNetwork.begin();
   const uint32_t nowMs = millis();
   gCycleStartedMs = nowMs;

@@ -51,8 +51,8 @@ Campos legados preservados por compatibilidade visual:
 - `cmd_fanB_pwm`
 - `t_supply_target`
 
-Nota: `peltierFanA/B` nao e reportado separadamente ao servidor — segue sempre o estado
-do modulo Peltier respetivo (controlado localmente no CDU).
+Nota: a ventoinha do dissipador de cada Peltier nao e reportada separadamente ao servidor,
+porque segue por hardware o mesmo ramo de potencia do modulo Peltier respetivo.
 
 ## 5) Semantica visual recomendada
 

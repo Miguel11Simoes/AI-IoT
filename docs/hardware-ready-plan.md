@@ -5,7 +5,7 @@
 Implementar a arquitetura final:
 
 - 2 racks reais (`R00`, `R07`) com `DS18B20 + heater`.
-- 1 CDU real (`ESP32-C6`) com `fanA/fanB`, `peltierA/peltierB` e ventoinhas de dissipador.
+- 1 CDU real (`ESP32-C6`) com `fanA/fanB` e `peltierA/peltierB`.
 - 6 racks restantes sinteticos no servidor.
 
 ## 1) Firmware por papel
@@ -23,18 +23,18 @@ Implementar a arquitetura final:
 
 - controla `fanA_pwm` (GPIO6)
 - controla `peltierA_on` (GPIO18)
-- ventoinha de dissipador quente `peltierFanA` (GPIO20) segue estado do peltierA
 - envia `cdu_telemetry`
 - aplica `cdu_cmd`
 - fallback local proporcional se comando ficar stale
 - canais B desativados (255)
+- a ventoinha do dissipador da Peltier A liga por hardware no mesmo ramo de potencia
 
 ### cdu_esp32c6_full
 
 - igual a stage1 com canais B ativos:
   - `fanB_pwm` (GPIO7)
   - `peltierB_on` (GPIO19)
-  - `peltierFanB` (GPIO21)
+  - ventoinha da Peltier B no mesmo ramo de potencia do `peltierB`
 
 ## 2) Papel do servidor
 
@@ -88,7 +88,7 @@ platformio run -e cdu_esp32c6
 1. Arrancar `server.py`.
 2. Ligar CDU e validar `cdu_telemetry` + fans a responder.
 3. Verificar que peltierA liga quando supply excede setpoint + 3 deg C.
-4. Verificar que peltierFanA liga/desliga em sincronia com peltierA.
+4. Verificar que a ventoinha da Peltier A liga/desliga com o mesmo ramo de potencia do peltierA.
 5. Ligar R00 e validar leitura DS18B20 + heater cmd.
 6. Ligar R07 e validar resposta zonal A/B no CDU.
 7. Confirmar twin com R00/R07 reais e restantes sinteticos.

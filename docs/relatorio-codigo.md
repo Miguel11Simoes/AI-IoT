@@ -136,7 +136,7 @@ build_flags =
 
 ```ini
 [env:cdu_esp32c6]
-; Stage1: 1 rack, 1 fan, 1 Peltier, 1 Peltier fan
+; Stage1: 1 rack, 1 fan, 1 Peltier
 platform = https://github.com/pioarduino/platform-espressif32.git#55.03.37
 board = esp32-c6-devkitc-1
 lib_ignore =
@@ -149,11 +149,9 @@ build_flags =
   -DCDU_FAN_B_PIN=255
   -DCDU_PELTIER_A_PIN=18
   -DCDU_PELTIER_B_PIN=255
-  -DCDU_PELTIER_FAN_A_PIN=20
-  -DCDU_PELTIER_FAN_B_PIN=255
 
 [env:cdu_esp32c6_full]
-; Full: 2 racks, 2 fans, 2 Peltiers, 2 Peltier fans
+; Full: 2 racks, 2 fans, 2 Peltiers
 build_flags =
   ${env.build_flags}
   -DDEVICE_ROLE=2
@@ -161,8 +159,6 @@ build_flags =
   -DCDU_FAN_B_PIN=7
   -DCDU_PELTIER_A_PIN=18
   -DCDU_PELTIER_B_PIN=19
-  -DCDU_PELTIER_FAN_A_PIN=20
-  -DCDU_PELTIER_FAN_B_PIN=21
 ```
 
 O ESP32-C6 usa uma **plataforma e toolchain separadas** para evitar conflitos com o ESP32 clássico (RISC-V vs Xtensa). As bibliotecas `control` e `sensors` são ignoradas porque a CDU não mede temperatura interna nem controla heaters.
@@ -227,7 +223,9 @@ inline RackNodeConfig loadRackConfig() {
 
 ### Struct `CduConfig`
 
-Versão simplificada para o CDU — contém Wi-Fi, servidor, pinos dos fans, pinos dos módulos Peltier, pinos das ventoinhas de dissipador dos Peltiers, polaridades e temporizadores. Não tem coeficientes térmicos porque a CDU não simula temperatura interna.
+Correcao de arquitetura: o firmware da CDU expoe apenas `fanA/fanB` e `peltierA/peltierB`. As ventoinhas dos dissipadores das Peltiers ficam fora do firmware e seguem o mesmo ramo de potencia comutado de cada Peltier.
+
+Versão simplificada para o CDU — contém Wi-Fi, servidor, pinos dos fans, pinos dos módulos Peltier, polaridades e temporizadores. As ventoinhas dos dissipadores das Peltiers ficam fora do firmware porque seguem o mesmo ramo de potência comutado de cada módulo. Não tem coeficientes térmicos porque a CDU não simula temperatura interna.
 
 ---
 
@@ -618,7 +616,9 @@ analogWrite(gConfig.fanAPin, gFanACurrent);
 
 Com `step=4` e `CYCLE_INTERVAL_MS=1000`, o fan demora ~60 ciclos (60s) a ir de 0 a 255. Isto evita picos de corrente e ruído acústico.
 
-#### Peltier e ventoinha do dissipador quente
+#### Peltier
+
+Nota de hardware: a ventoinha do dissipador de cada Peltier nao usa GPIO nem MOSFET dedicado no firmware. Ela segue o mesmo ramo de potencia comutado do respetivo modulo Peltier.
 
 ```cpp
 void writePeltier(uint8_t pin, bool enabled) {
@@ -627,24 +627,16 @@ void writePeltier(uint8_t pin, bool enabled) {
     digitalWrite(pin, (enabled == activeHigh) ? HIGH : LOW);
 }
 
-void writePeltierFan(uint8_t pin, bool enabled) {
-    if (!pinAvailable(pin)) return;
-    const bool activeHigh = gConfig.peltierFanActiveHigh;
-    digitalWrite(pin, (enabled == activeHigh) ? HIGH : LOW);
-}
-
 void applyPeltiers() {
     gPeltierACurrent = gPeltierATarget;
     gPeltierBCurrent = gPeltierBTarget;
     writePeltier(gConfig.peltierAPin, gPeltierACurrent);
     writePeltier(gConfig.peltierBPin, gPeltierBCurrent);
-    // Ventoinha do dissipador quente segue o estado do módulo Peltier
-    writePeltierFan(gConfig.peltierFanAPin, gPeltierACurrent);
-    writePeltierFan(gConfig.peltierFanBPin, gPeltierBCurrent);
+    // A ventoinha do dissipador segue o mesmo ramo de potencia do modulo Peltier
 }
 ```
 
-As ventoinhas de dissipador quente (`peltierFanA/B`) não precisam de canal de comando separado no servidor — são ativadas automaticamente em sincronia com o módulo Peltier respetivo. Se o Peltier A está ligado, a sua ventoinha de dissipador liga; quando o Peltier desliga, a ventoinha desliga.
+As ventoinhas dos dissipadores das Peltiers não precisam de canal de comando separado no servidor nem de GPIO dedicado no `ESP32-C6`. Elas são ligadas eletricamente ao mesmo ramo de potência comutado do módulo Peltier respetivo. Se o Peltier A está ligado, a sua ventoinha liga por hardware; quando o Peltier desliga, a ventoinha também desliga.
 
 #### Temperatura virtual de supply
 

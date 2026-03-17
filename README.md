@@ -4,7 +4,7 @@ Arquitetura final suportada:
 
 - `1` ou `2` racks reais configuraveis: `R00` agora, `R00 + R07` depois (`ESP8266MOD/ESP-12E`)
 - `6` racks virtuais estimadas no servidor (`2x4`)
-- `1` CDU (`ESP32-C6`) com duas zonas (`fanA`, `fanB`), `2` saidas Peltier e `2` ventoinhas dedicadas das Peltiers
+- `1` CDU (`ESP32-C6`) com duas zonas (`fanA`, `fanB`) e `2` saidas Peltier
 - servidor central (`server.py`) com modelo térmico zonal + AI + setpoints
 - frontend 3D único em `twin3d/`
 
@@ -32,8 +32,14 @@ Hardware note:
 
 Stage plan:
 
-- agora: `R00 + fanA + peltierA + peltierFanA`
-- depois: `R00 + R07 + fanA + fanB + peltierA + peltierB + peltierFanA + peltierFanB`
+- agora: `R00 + fanA + peltierA`
+- depois: `R00 + R07 + fanA + fanB + peltierA + peltierB`
+
+Nota de cablagem:
+
+- cada ventoinha do dissipador da Peltier liga no mesmo ramo de potencia do respetivo Peltier
+- nao existe GPIO nem MOSFET dedicado para `peltier fan`
+- quando `peltierA` liga, a sua ventoinha liga por hardware; o mesmo para `peltierB`
 
 Peltier BOM minimo (2 canais):
 
@@ -90,8 +96,8 @@ python tools/node_simulator.py --host 127.0.0.1 --port 5000 --duration 180 --int
 
 - `rack_r00` (`ESP8266MOD / ESP-12E`, rack `R00`)
 - `rack_r07` (`ESP8266MOD / ESP-12E`, rack `R07`)
-- `cdu_esp32c6` (`ESP32-C6`, `CDU1`, stage1: `fanA + peltierA + peltierFanA`)
-- `cdu_esp32c6_full` (`ESP32-C6`, `CDU1`, stage final: `fanA + fanB + 2x Peltier + 2x Peltier fan`)
+- `cdu_esp32c6` (`ESP32-C6`, `CDU1`, stage1: `fanA + peltierA`)
+- `cdu_esp32c6_full` (`ESP32-C6`, `CDU1`, stage final: `fanA + fanB + 2x Peltier`)
 
 Build:
 
@@ -143,7 +149,7 @@ Editar `platformio.ini`:
 
 ## Hardware-ready workflow
 
-Stage 1 (`1 rack + 1 fan`):
+Stage 1 (`1 rack + 1 fan + 1 Peltier`):
 
 ```powershell
 python server.py --host 0.0.0.0 --port 5000 --ui-port 8080 --ws-port 8000 --edge-ws-port 8765 --detector zscore --real-racks R00 --heater-equivalent-target-w 20 --heater-default-power-w 1.44 --virtual-ambient-c 26
@@ -171,8 +177,9 @@ If you only want the CDU:
 - `platformio.ini` has the correct `WIFI_SSID`, `WIFI_PASSWORD` and `SERVER_HOST`
 - rack heater power matches reality (`HEATER_RATED_POWER_W=1.44` for the current `100 ohm @ 12V` prototype)
 - `rack_r00` and `rack_r07` pinout matches the wiring (`GPIO4` DS18B20, `GPIO5` heater in the current base profile)
-- `cdu_esp32c6` is used for `stage1` (`fanA + peltierA + peltierFanA`)
-- `cdu_esp32c6_full` is only used when `fanB`, `peltierB` and `peltierFanB` are really wired
+- `cdu_esp32c6` is used for `stage1` (`fanA + peltierA`)
+- `cdu_esp32c6_full` is only used when `fanB` and `peltierB` are really wired
+- each Peltier fan is wired to the same switched power branch as its Peltier, with no dedicated GPIO
 - server `--real-racks` matches the hardware currently connected
 
 ## Bring-up checklist
