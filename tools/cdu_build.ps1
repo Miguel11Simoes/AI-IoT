@@ -1,8 +1,6 @@
 param(
   [ValidateSet("build", "upload")]
   [string]$Action = "build",
-  [ValidateSet("stage1", "full")]
-  [string]$Profile = "stage1",
   [string]$UploadPort = ""
 )
 
@@ -16,7 +14,7 @@ if (-not (Test-Path $pioExe)) {
 
 Push-Location $projectRoot
 try {
-  $envName = if ($Profile -eq "full") { "cdu_esp32c6_full" } else { "cdu_esp32c6" }
+  $envName = "cdu_esp32c6"
   if ($Action -eq "upload") {
     if ([string]::IsNullOrWhiteSpace($UploadPort)) {
       & $pioExe run -e $envName -t upload

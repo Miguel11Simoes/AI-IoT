@@ -1397,7 +1397,7 @@ def main() -> None:
     parser.add_argument("--detector", default="zscore", choices=["zscore", "iforest"])
     parser.add_argument("--contamination", default=0.05, type=float)
     parser.add_argument("--warmup-samples", default=50, type=int)
-    parser.add_argument("--real-racks", default="R00", help="comma-separated real rack ids, e.g. R00 or R00,R07")
+    parser.add_argument("--real-racks", default="R00,R07", help="comma-separated real rack ids, e.g. R00,R07")
     parser.add_argument("--heater-equivalent-target-w", default=20.0, type=float, help="virtual heater target power per rack")
     parser.add_argument("--heater-default-power-w", default=1.44, type=float, help="default physical heater rated power when rack telemetry omits it")
     parser.add_argument("--virtual-ambient-c", default=26.0, type=float, help="ambient baseline for the virtual rack model")

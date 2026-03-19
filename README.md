@@ -1,59 +1,38 @@
 # AI-IoT - Hierarchical Cooperative Cooling Twin
 
-Arquitetura final suportada:
+Arquitetura atual:
 
-- `1` ou `2` racks reais configuraveis: `R00` agora, `R00 + R07` depois (`ESP8266MOD/ESP-12E`)
-- `6` racks virtuais estimadas no servidor (`2x4`)
-- `1` CDU (`ESP32-C6`) com duas zonas (`fanA`, `fanB`) e `2` saidas Peltier
-- servidor central (`server.py`) com modelo térmico zonal + AI + setpoints
-- frontend 3D único em `twin3d/`
+- `2` racks reais: `R00` e `R07` em `NodeMCU / ESP8266 (ESP-12E)`
+- `6` racks sinteticas no servidor para completar o twin `2x4`
+- `1` CDU em `ESP32-C6` com `fanA`, `fanB`, `peltierA` e `peltierB`
+- `server.py` como coordenador central, digital twin e AI
+- UI 3D em `twin3d/`
 
-## BOM mínimo alvo
+## BOM atual
 
-- `2x` ESP32-DEVKITC-V4 (racks)
-- `1x` ESP32-C6 DevKitC-1 (CDU)
-- `2x` DS18B20 (1 por rack)
-- `2x` resistência `12V 20W` (1 por rack)
-- `2x` módulo IRF520 (heater low-side)
-- `2x` fan module DFR0332 (CDU zona A/B)
+- `2x` NodeMCU / ESP8266 (`board = esp12e`)
+- `1x` ESP32-C6 DevKitC-1
+- `2x` DS18B20
+- `2x` resistencias ceramicas `100 ohm` (`~1.44W @ 12V`)
+- `2x` drivers low-side para os heaters das racks
+- `4x` IRLZ44N no CDU
+- `2x` XL4015 ajustados para `~2.0V`
+- `2x` modulos Peltier
+- `2x` ventoinhas `12V` do CDU (`fanA`, `fanB`)
+- `2x` ventoinhas de dissipador das Peltiers
 - `1x` fonte `12V 5A`
 
-Nota de segurança: o heater usa `time-proportioning` com janela de `2s` (`HEAT_WINDOW_MS=2000`), não PWM rápido.
+Notas de hardware:
 
-Update target:
-
-- racks migradas para `ESP8266MOD / ESP-12E`
-- servidor pode arrancar com apenas `R00` real e mais tarde aceitar `R00,R07`
-- CDU passa a ter `fanA/fanB` + `peltierA/peltierB`
-
-Hardware note:
-
-- os Peltiers `2V 8.5A` precisam de driver de potencia e alimentacao dedicada; nao ligar diretamente ao `ESP32-C6`
-
-Stage plan:
-
-- agora: `R00 + fanA + peltierA`
-- depois: `R00 + R07 + fanA + fanB + peltierA + peltierB`
-
-Nota de cablagem:
-
-- cada ventoinha do dissipador da Peltier liga no mesmo ramo de potencia do respetivo Peltier
+- as ventoinhas dos dissipadores das Peltiers ligam no mesmo ramo comutado do respetivo Peltier
 - nao existe GPIO nem MOSFET dedicado para `peltier fan`
-- quando `peltierA` liga, a sua ventoinha liga por hardware; o mesmo para `peltierB`
-
-Peltier BOM minimo (2 canais):
-
-- `1x` fonte DC de potencia com folga (`5V/10A` ou `12V/5A`)
-- `2x` buck DC-DC ajustavel com limite de corrente, configurados para `2.0V`, `>=10A` continuos
-- `2x` MOSFET logic-level / driver DC (`3.3V gate`, `>=15A`)
-- `2x` dissipador + ventoinha para o lado quente
-- pasta termica, fixacao mecanica, cabos grossos e fusivel
+- os GPIOs do `ESP32-C6` apenas comandam `fanA`, `fanB`, `peltierA` e `peltierB`
 
 ## Topologia runtime
 
 ```text
 R00 / R07 (Wi-Fi WS) ----\
-                          +--> server.py (estado global + AI + controlo)
+                          +--> server.py (twin + AI + controlo)
 CDU ESP32-C6 (Wi-Fi WS) --/
 
 server.py -> HTTP 8080 + WS twin 8000 + WS edge 8765 + TCP edge 5000
@@ -62,132 +41,97 @@ server.py -> HTTP 8080 + WS twin 8000 + WS edge 8765 + TCP edge 5000
 ## Endpoints
 
 - `TCP edge`: `5000`
-- `WS twin (dashboard)`: `8000`
-- `WS edge (firmware)`: `8765`
+- `WS twin`: `8000`
+- `WS edge`: `8765`
 - `HTTP UI/API`: `8080`
 
-## Correr servidor
+## Servidor
 
-Arranque inicial com uma rack real:
-
-```bash
-python server.py --host 0.0.0.0 --port 5000 --ui-port 8080 --ws-port 8000 --edge-ws-port 8765 --detector zscore --real-racks R00
-```
-
-Quando adicionares a segunda rack:
+Arranque normal com as duas racks reais:
 
 ```bash
 python server.py --host 0.0.0.0 --port 5000 --ui-port 8080 --ws-port 8000 --edge-ws-port 8765 --detector zscore --real-racks R00,R07
 ```
 
-Abrir dashboard:
+Fallback temporario para uma rack apenas:
+
+```bash
+python server.py --host 0.0.0.0 --port 5000 --ui-port 8080 --ws-port 8000 --edge-ws-port 8765 --detector zscore --real-racks R00
+```
+
+Dashboard:
 
 ```text
 http://127.0.0.1:8080/twin3d/index.html
 ```
 
-## Teste sem hardware
+## Firmware e build
 
-```bash
-python tools/node_simulator.py --host 127.0.0.1 --port 5000 --duration 180 --interval 1 --inject-anomaly-after 45
-```
+Targets PlatformIO:
 
-## Targets PlatformIO
+- `rack_r00`
+- `rack_r07`
+- `cdu_esp32c6`
 
-- `rack_r00` (`ESP8266MOD / ESP-12E`, rack `R00`)
-- `rack_r07` (`ESP8266MOD / ESP-12E`, rack `R07`)
-- `cdu_esp32c6` (`ESP32-C6`, `CDU1`, stage1: `fanA + peltierA`)
-- `cdu_esp32c6_full` (`ESP32-C6`, `CDU1`, stage final: `fanA + fanB + 2x Peltier`)
-
-Build:
+Build dos racks:
 
 ```bash
 platformio run -e rack_r00
 platformio run -e rack_r07
 ```
 
-For `ESP32-C6` use an isolated packages cache (avoids package conflicts with ESP32 legacy toolchain):
+Build do CDU com cache isolada:
 
 ```powershell
 $env:PLATFORMIO_PACKAGES_DIR = "$PWD\\.pio-cdu-packages"
 platformio run -e cdu_esp32c6
-platformio run -e cdu_esp32c6_full
 ```
 
-Or run:
+Ou:
 
 ```powershell
-.\tools\cdu_build.ps1
-.\tools\cdu_build.ps1 build full
+.\tools\cdu_build.ps1 build
+```
+
+Build completo do deployment atual:
+
+```powershell
+.\tools\stage_build.ps1 build
 ```
 
 Upload:
 
-```bash
-platformio run -e rack_r00 -t upload
-platformio run -e rack_r07 -t upload
-$env:PLATFORMIO_PACKAGES_DIR = "$PWD\\.pio-cdu-packages"; platformio run -e cdu_esp32c6 -t upload
-$env:PLATFORMIO_PACKAGES_DIR = "$PWD\\.pio-cdu-packages"; platformio run -e cdu_esp32c6_full -t upload
-```
-
-Or:
-
 ```powershell
-.\tools\cdu_build.ps1 upload
-.\tools\cdu_build.ps1 upload full
+.\tools\stage_build.ps1 upload -RackR00Port COM3 -RackR07Port COM5 -CduPort COM4
 ```
 
-## Configuração obrigatória
+## Pinout de referencia
 
-Editar `platformio.ini`:
+Racks:
 
-- `WIFI_SSID`
-- `WIFI_PASSWORD`
-- `SERVER_HOST` (IP do PC com `server.py`)
-- pinos conforme a tua cablagem (`ONE_WIRE_PIN`, `HEAT_PIN`, `CDU_FAN_A_PIN`, `CDU_FAN_B_PIN`, `CDU_PELTIER_A_PIN`, `CDU_PELTIER_B_PIN`, etc.)
-- para racks `ESP8266`, a configuracao base usa `GPIO4` no DS18B20 e `GPIO5` no heater
+- `GPIO4` -> `DS18B20 DQ`
+- `GPIO5` -> driver do heater
 
-## Hardware-ready workflow
+CDU:
 
-Stage 1 (`1 rack + 1 fan + 1 Peltier`):
+- `GPIO6` -> `fanA`
+- `GPIO7` -> `fanB`
+- `GPIO18` -> `peltierA`
+- `GPIO19` -> `peltierB`
 
-```powershell
-python server.py --host 0.0.0.0 --port 5000 --ui-port 8080 --ws-port 8000 --edge-ws-port 8765 --detector zscore --real-racks R00 --heater-equivalent-target-w 20 --heater-default-power-w 1.44 --virtual-ambient-c 26
-.\tools\stage_build.ps1 build stage1
-.\tools\stage_build.ps1 upload stage1 -RackR00Port COM3 -CduPort COM4
-```
+## Modelo de dados
 
-Stage full (`2 racks + 2 fans + 2 Peltiers`):
+- a rack envia apenas telemetria real: `t_hot_real`, `heater_on`, `heat_pwm`, `sensor_ok`
+- se houver segunda sonda, pode tambem enviar `t_liquid_real`
+- o servidor estima `t_liquid` quando ela nao existe
+- o servidor calcula `heater_real_w`, `heater_equivalent_w` e `t_virtual`
+- se uma rack desaparecer, o servidor transita `real -> stale -> simulated`
 
-```powershell
-python server.py --host 0.0.0.0 --port 5000 --ui-port 8080 --ws-port 8000 --edge-ws-port 8765 --detector zscore --real-racks R00,R07 --heater-equivalent-target-w 20 --heater-default-power-w 1.44 --virtual-ambient-c 26
-.\tools\stage_build.ps1 build full
-.\tools\stage_build.ps1 upload full -RackR00Port COM3 -RackR07Port COM5 -CduPort COM4
-```
+## Checklist rapido
 
-If you only want the CDU:
-
-```powershell
-.\tools\cdu_build.ps1 build stage1
-.\tools\cdu_build.ps1 upload full -UploadPort COM4
-```
-
-## Pre-upload checklist
-
-- `platformio.ini` has the correct `WIFI_SSID`, `WIFI_PASSWORD` and `SERVER_HOST`
-- rack heater power matches reality (`HEATER_RATED_POWER_W=1.44` for the current `100 ohm @ 12V` prototype)
-- `rack_r00` and `rack_r07` pinout matches the wiring (`GPIO4` DS18B20, `GPIO5` heater in the current base profile)
-- `cdu_esp32c6` is used for `stage1` (`fanA + peltierA`)
-- `cdu_esp32c6_full` is only used when `fanB` and `peltierB` are really wired
-- each Peltier fan is wired to the same switched power branch as its Peltier, with no dedicated GPIO
-- server `--real-racks` matches the hardware currently connected
-
-## Bring-up checklist
-
-1. Start `server.py`.
-2. Open `http://127.0.0.1:8080/twin3d/index.html`.
-3. Power the CDU and confirm `CDU Plant` is online.
-4. Power `R00` and confirm it appears as `real`.
-5. If `R00` drops, confirm it moves through `stale` and then `simulated`.
-6. For full deployment, power `R07` and confirm the same transition logic independently.
-7. Check that the table shows `T_real`, `T_virtual`, `heater real`, `heater eq`, and the expected `source_status`.
+- preencher `WIFI_SSID`, `WIFI_PASSWORD` e `SERVER_HOST` em `platformio.ini`
+- confirmar `HEATER_RATED_POWER_W=1.44` para as resistencias `100 ohm @ 12V`
+- confirmar `GPIO4` e `GPIO5` nas duas racks
+- confirmar `GPIO6`, `GPIO7`, `GPIO18` e `GPIO19` no CDU
+- ajustar os dois `XL4015` para `~2.0V` antes de ligar os Peltiers
+- garantir `GND` comum entre PSU, racks, CDU e drivers

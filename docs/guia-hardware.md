@@ -1,100 +1,64 @@
-# Guia de Hardware e Ligacoes (AI-IoT)
+# Guia de Hardware e Ligacoes
 
-Estado alinhado com o projeto submetido no RMIC:
+Estado atual do projeto:
 
-- Rack R00 e R07: medicao DS18B20 + carga termica por heater 12V/20W.
-- CDU (ESP32-C6): controlo de cooling por fanA/fanB (zonas A/B) e Peltier A/B.
-- As ventoinhas dos dissipadores das Peltiers ligam no mesmo ramo de potencia de cada
-  modulo, sem GPIO dedicado.
-- Servidor: coordena setpoints entre racks e CDU via WebSocket.
+- `R00` e `R07` usam `NodeMCU / ESP8266 (ESP-12E)`
+- cada rack tem `1x DS18B20` e `1x resistencia 100 ohm`
+- o `CDU` usa `ESP32-C6` com `fanA`, `fanB`, `peltierA` e `peltierB`
+- cada ventoinha de dissipador da Peltier segue o mesmo ramo comutado do respetivo Peltier
 
-## 1) Pinout oficial atual
+## Pinout
 
-### Racks (ESP8266 ESP-12E)
+### Racks
 
-- `GPIO4` -> DS18B20 `DQ` (1-Wire)
-- `3V3`  -> DS18B20 `VDD`
-- `GND`  -> DS18B20 `GND`
+- `GPIO4` -> `DS18B20 DQ`
+- `3V3` -> `DS18B20 VDD`
+- `GND` -> `DS18B20 GND`
 - `4.7k` entre `3V3` e `DQ`
-- `GPIO5` -> `IN/SIG` do modulo IRF520 (heater)
-- `GND ESP8266` -> `GND` do IRF520
+- `GPIO5` -> `IN/SIG` do driver low-side do heater
 
-Notas:
-- `FAN_PIN` e `PUMP_PIN` foram removidos da configuracao ativa dos racks.
-- O rack nao controla cooling local fisico no desenho alvo.
+### CDU
 
-### CDU (ESP32-C6) — stage1 (1 rack, 1 Peltier)
+- `GPIO6` -> `fanA`
+- `GPIO7` -> `fanB`
+- `GPIO18` -> `peltierA`
+- `GPIO19` -> `peltierB`
 
-- `GPIO6`  -> PWM do driver fan zona A (DFR0332 ou equivalente)
-- `GPIO18` -> sinal de enable do modulo Peltier A (active-high)
-- `GND ESP32-C6` -> `GND` comum dos drivers
-- ventoinha do dissipador da Peltier A -> mesmo ramo de potencia comutado do Peltier A
-
-### CDU (ESP32-C6) — full (2 racks, 2 Peltiers)
-
-- `GPIO6`  -> PWM driver fan zona A
-- `GPIO7`  -> PWM driver fan zona B
-- `GPIO18` -> enable Peltier A
-- `GPIO19` -> enable Peltier B
-- `GND ESP32-C6` -> `GND` comum
-- ventoinha dissipador Peltier A/B -> mesmo ramo de potencia comutado de cada Peltier
-
-## 2) Esboco de ligacoes
-
-```text
-                     Wi-Fi WS (porta 8765)
-
- +----------------------+   +----------------------+   +----------------------+
- | Rack R00 (ESP8266)   |   | Rack R07 (ESP8266)   |   | CDU1 (ESP32-C6)      |
- | DS18B20 + Heater     |   | DS18B20 + Heater     |   | fanA/B + peltierA/B  |
- +----------+-----------+   +----------+-----------+   +----------+-----------+
-            \                          |                          /
-             \                         |                         /
-              +------------------------+------------------------+
-                                       |
-                               +-------+-------+
-                               |   server.py   |
-                               +---------------+
-```
-
-## 3) Potencia e GND comum
+## Potencia
 
 ```text
 +12V PSU -> heater R00 (+)
 +12V PSU -> heater R07 (+)
-+12V PSU -> alimentacao dos drivers de fan e Peltier do CDU
-
-heater (-) -> IRF520 DRAIN/OUT
-IRF520 SOURCE/GND -> GND PSU
-ESP8266 GPIO5 -> IRF520 IN/SIG
-ESP8266 GND -> IRF520 GND
-
-MOSFET/driver Peltier A -> ramal comutado A
-ramal comutado A -> buck A -> Peltier A
-ramal comutado A -> ventoinha dissipador Peltier A (12V)
-
-MOSFET/driver Peltier B -> ramal comutado B
-ramal comutado B -> buck B -> Peltier B
-ramal comutado B -> ventoinha dissipador Peltier B (12V)
-
-Todos os GNDs ligados em comum:
-PSU GND + ESP8266 R00/R07 GND + ESP32-C6 GND + drivers
++12V PSU -> fanA (+)
++12V PSU -> fanB (+)
++12V PSU -> XL4015 A IN+
++12V PSU -> XL4015 B IN+
++12V PSU -> peltier fan A (+)
++12V PSU -> peltier fan B (+)
 ```
 
-## 4) Checklist rapido
+Ligacoes low-side:
 
-- Confirmar `ONE_WIRE_PIN=4` e `HEAT_PIN=5` nos racks.
-- Confirmar `CDU_FAN_A_PIN=6` (stage1) ou `CDU_FAN_A_PIN=6`, `CDU_FAN_B_PIN=7` (full).
-- Confirmar `CDU_PELTIER_A_PIN=18` (stage1).
-- Confirmar resistor de pull-up `4.7k` no DS18B20.
-- Confirmar topologia low-side correta do IRF520 para o heater.
-- Confirmar driver de corrente adequado para o Peltier (carga ~6A).
-- Confirmar GND comum entre todos os MCUs e modulos.
+```text
+heater (-) -> driver heater rack -> GND
+fanA (-)   -> IRLZ44N #1 -> GND
+fanB (-)   -> IRLZ44N #2 -> GND
+XL4015 A IN- + peltier fan A (-) -> IRLZ44N #3 -> GND
+XL4015 B IN- + peltier fan B (-) -> IRLZ44N #4 -> GND
+```
 
-## 5) Nota de controlo
+## Regras importantes
 
-No rack, o heater e controlado por time-proportioning (`HEAT_WINDOW_MS=2000`),
-comutando ON/OFF digital para proteger o IRF520.
+- todos os `GND` ficam em comum
+- as racks so aquecem e medem
+- o `CDU` faz todo o cooling fisico
+- `t_liquid` passa a ser estimada no servidor quando nao existe segunda sonda
+- os `XL4015` devem ser ajustados para `~2.0V` antes de ligar os Peltiers
 
-No CDU, a ventoinha de cada Peltier nao e controlada por GPIO.
-Ela liga e desliga por hardware no mesmo ramo de potencia do respetivo modulo Peltier.
+## Checklist rapido
+
+- confirmar `ONE_WIRE_PIN=4` e `HEAT_PIN=5`
+- confirmar `CDU_FAN_A_PIN=6`, `CDU_FAN_B_PIN=7`
+- confirmar `CDU_PELTIER_A_PIN=18`, `CDU_PELTIER_B_PIN=19`
+- confirmar pull-up `4.7k` no `DS18B20`
+- confirmar `GND` comum entre PSU, racks, CDU e drivers

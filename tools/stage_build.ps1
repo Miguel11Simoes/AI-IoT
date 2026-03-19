@@ -1,8 +1,6 @@
 param(
   [ValidateSet("build", "upload")]
   [string]$Action = "build",
-  [ValidateSet("stage1", "full")]
-  [string]$Profile = "stage1",
   [string]$RackR00Port = "",
   [string]$RackR07Port = "",
   [string]$CduPort = ""
@@ -55,18 +53,11 @@ function Invoke-PioTarget {
   }
 }
 
-$targets = if ($Profile -eq "full") {
-  @(
-    @{ Env = "rack_r00"; Port = $RackR00Port }
-    @{ Env = "rack_r07"; Port = $RackR07Port }
-    @{ Env = "cdu_esp32c6_full"; Port = $CduPort }
-  )
-} else {
-  @(
-    @{ Env = "rack_r00"; Port = $RackR00Port }
-    @{ Env = "cdu_esp32c6"; Port = $CduPort }
-  )
-}
+$targets = @(
+  @{ Env = "rack_r00"; Port = $RackR00Port }
+  @{ Env = "rack_r07"; Port = $RackR07Port }
+  @{ Env = "cdu_esp32c6"; Port = $CduPort }
+)
 
 Push-Location $projectRoot
 try {

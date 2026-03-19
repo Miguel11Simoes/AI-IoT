@@ -1,95 +1,69 @@
-# Hardware-Ready Plan (Alinhado com RMIC)
+# Hardware-Ready Plan
 
 ## Objetivo
 
-Implementar a arquitetura final:
+Fechar o deployment atual:
 
-- 2 racks reais (`R00`, `R07`) com `DS18B20 + heater`.
-- 1 CDU real (`ESP32-C6`) com `fanA/fanB` e `peltierA/peltierB`.
-- 6 racks restantes sinteticos no servidor.
+- `2` racks reais: `R00` e `R07`
+- `1` CDU real: `fanA`, `fanB`, `peltierA`, `peltierB`
+- `6` racks sinteticas no servidor
 
-## 1) Firmware por papel
+## Firmware por papel
 
 ### rack_r00 / rack_r07
 
-- le `DS18B20` de forma assincrona (conversao nao bloqueante)
-- rejeita leituras NaN/Inf ou fora de [-100, 130] deg C
-- estima `t_liquid` quando existe apenas 1 sensor
-- controla apenas `heater` (`HEAT_PIN=5`)
-- envia `rack_telemetry`
-- aplica `rack_cmd` (heat-first)
+- le `DS18B20` de forma assincrona
+- rejeita `NaN`, `Inf` e leituras invalidas
+- controla apenas o heater local
+- envia telemetria real
+- aplica `rack_cmd`
 
-### cdu_esp32c6 (stage1)
+### cdu_esp32c6
 
-- controla `fanA_pwm` (GPIO6)
-- controla `peltierA_on` (GPIO18)
+- controla `fanA_pwm` em `GPIO6`
+- controla `fanB_pwm` em `GPIO7`
+- controla `peltierA_on` em `GPIO18`
+- controla `peltierB_on` em `GPIO19`
 - envia `cdu_telemetry`
 - aplica `cdu_cmd`
-- fallback local proporcional se comando ficar stale
-- canais B desativados (255)
-- a ventoinha do dissipador da Peltier A liga por hardware no mesmo ramo de potencia
+- usa fallback local se o comando remoto ficar stale
 
-### cdu_esp32c6_full
+## Papel do servidor
 
-- igual a stage1 com canais B ativos:
-  - `fanB_pwm` (GPIO7)
-  - `peltierB_on` (GPIO19)
-  - ventoinha da Peltier B no mesmo ramo de potencia do `peltierB`
+- aceita telemetria real de `R00` e `R07`
+- estima `t_liquid` quando a rack nao a mede
+- calcula `heater_real_w`, `heater_equivalent_w` e `t_virtual`
+- mantem fallback `real -> stale -> simulated` por rack
+- gera comandos para as duas racks e para o CDU
 
-## 2) Papel do servidor
+## Constrangimentos eletricos
 
-- aceita telemetria real apenas de `R00` e `R07`
-- atualiza twin 2x4 (8 racks)
-- gera comandos de heater para racks
-- gera comandos de cooling zonal para CDU (fans + Peltier)
-- executa deteccao de anomalias (zscore / iforest)
-- anomaly threshold alinhado com firmware: `--anomaly-temp-c` default 80 deg C
+- `GND` comum entre PSU, racks, CDU e drivers
+- `DS18B20` com `4.7k` pull-up
+- heater em low-side no driver da rack
+- cada Peltier com `1x XL4015`
+- cada ventoinha de dissipador da Peltier liga no mesmo ramo comutado do respetivo Peltier
 
-## 3) Constrangimentos eletricos
-
-- GND comum entre PSU, racks, CDU e drivers
-- DS18B20 com pull-up 4.7k
-- heater em low-side no IRF520
-- Peltier com driver de corrente adequado (~6A por modulo)
-- sem cooling local fisico nos racks
-
-## 4) Build e deploy
-
-### Racks (ESP8266 ESP-12E)
-
-```bash
-platformio run -e rack_r00
-platformio run -e rack_r07
-```
-
-Ou usar `default_envs = rack_r00` e correr `platformio run` simples.
-
-### CDU stage1
+## Build e deploy
 
 ```powershell
-.\tools\stage_build.ps1 build stage1
+.\tools\stage_build.ps1 build
+.\tools\stage_build.ps1 upload -RackR00Port COM3 -RackR07Port COM5 -CduPort COM4
 ```
 
-### CDU full
+Build manual do CDU:
 
 ```powershell
-.\tools\stage_build.ps1 build full
-```
-
-### CDU (manual, com packages dir isolado)
-
-```powershell
-$env:PLATFORMIO_PACKAGES_DIR = "$PWD\.pio-cdu-packages"
+$env:PLATFORMIO_PACKAGES_DIR = "$PWD\\.pio-cdu-packages"
 platformio run -e cdu_esp32c6
 ```
 
-## 5) Bring-up
+## Bring-up
 
 1. Arrancar `server.py`.
-2. Ligar CDU e validar `cdu_telemetry` + fans a responder.
-3. Verificar que peltierA liga quando supply excede setpoint + 3 deg C.
-4. Verificar que a ventoinha da Peltier A liga/desliga com o mesmo ramo de potencia do peltierA.
-5. Ligar R00 e validar leitura DS18B20 + heater cmd.
-6. Ligar R07 e validar resposta zonal A/B no CDU.
-7. Confirmar twin com R00/R07 reais e restantes sinteticos.
-8. Testar fallback: desligar servidor -> CDU deve manter supply por controlo local.
+2. Abrir o dashboard.
+3. Ligar o `CDU`.
+4. Ligar `R00`.
+5. Ligar `R07`.
+6. Confirmar `real` nas duas racks.
+7. Confirmar `stale -> simulated` quando uma rack desliga.
