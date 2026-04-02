@@ -34,6 +34,8 @@ struct CduTelemetryMessage {
   const char* cduId;
   uint8_t fanAPwm;
   uint8_t fanBPwm;
+  uint8_t peltierAPwm;
+  uint8_t peltierBPwm;
   bool peltierAOn;
   bool peltierBOn;
   float tSupplyA;
@@ -45,6 +47,8 @@ struct CduCommandMessage {
   bool valid = false;
   uint8_t fanAPwm = 0;
   uint8_t fanBPwm = 0;
+  uint8_t peltierAPwm = 0;
+  uint8_t peltierBPwm = 0;
   bool peltierAOn = false;
   bool peltierBOn = false;
   bool hasSupplyTarget = false;

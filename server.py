@@ -208,7 +208,7 @@ class DigitalTwinCore:
         stale_seconds: float,
         history_limit: int,
         real_rack_ids: List[str],
-        heater_equivalent_target_w: float = 20.0,
+        heater_equivalent_target_w: float = 1.44,
         heater_default_power_w: float = 1.44,
         virtual_ambient_c: float = 26.0,
         stale_transition_seconds: float = 4.0,
@@ -227,12 +227,14 @@ class DigitalTwinCore:
         self.real_rack_ids = set(real_rack_ids)
         self.cdu_state: Optional[CduState] = None
 
-        self.hot = [55.0] * self.COUNT
-        self.liquid = [50.0] * self.COUNT
-        self.virtual_hot = [55.0] * self.COUNT
-        self.virtual_liquid = [50.0] * self.COUNT
+        initial_hot = float(virtual_ambient_c)
+        initial_liquid = self._estimate_server_liquid(0, initial_hot, time.time())
+        self.hot = [initial_hot] * self.COUNT
+        self.liquid = [initial_liquid] * self.COUNT
+        self.virtual_hot = [initial_hot] * self.COUNT
+        self.virtual_liquid = [initial_liquid] * self.COUNT
         self.fan = [0] * self.COUNT
-        self.heat = [140] * self.COUNT
+        self.heat = [0] * self.COUNT
         self.anomaly = [False] * self.COUNT
         self.heater_real_w = [0.0] * self.COUNT
         self.heater_equivalent_w = [0.0] * self.COUNT
@@ -252,8 +254,8 @@ class DigitalTwinCore:
         self.cdu_cmd = {
             "type": "cdu_cmd",
             "id": "CDU1",
-            "fanA_pwm": 160,
-            "fanB_pwm": 160,
+            "fanA_pwm": 0,
+            "fanB_pwm": 0,
             "peltierA_on": False,
             "peltierB_on": False,
             "fallback_target": "maintain_supply",
@@ -282,12 +284,11 @@ class DigitalTwinCore:
             "thermal_stability_pct": 100.0,
             "t_supply_A": self.supply_A,
             "t_supply_B": self.supply_B,
-            "fanA_pwm": 160,
-            "fanB_pwm": 160,
+            "fanA_pwm": 0,
+            "fanB_pwm": 0,
             "peltierA_on": False,
             "peltierB_on": False,
         }
-
         self.avg_history: Deque[Tuple[float, float]] = deque(maxlen=1200)
         self.power_history: Deque[Tuple[float, float]] = deque(maxlen=9000)
         self.rack_history: Dict[str, Deque[dict]] = {}
@@ -367,17 +368,34 @@ class DigitalTwinCore:
         now: float,
         seed_liquid: Optional[float] = None,
     ) -> float:
-        fan_norm = self._zone_fan_pwm(idx, now) / 255.0
-        target_delta = clamp(4.8 - (0.9 * fan_norm), 2.0, 8.5)
-        target_liquid = hot_c - target_delta
-        estimated = target_liquid
-        if seed_liquid is not None and math.isfinite(seed_liquid):
-            estimated = seed_liquid + (target_liquid - seed_liquid) * 0.22
-        liq_min = self.virtual_ambient_c - 2.0
-        liq_max = hot_c - 0.1
-        if liq_max <= liq_min:
-            liq_min = liq_max - 0.5
-        return clamp(estimated, liq_min, liq_max)
+        curve = (
+            (20.0, 40.0),
+            (23.0, 65.0),
+            (27.0, 72.0),
+            (28.0, 75.0),
+            (29.0, 80.0),
+            (31.0, 88.0),
+        )
+
+        if hot_c <= curve[0][0]:
+            x0, y0 = curve[0]
+            x1, y1 = curve[1]
+        elif hot_c >= curve[-1][0]:
+            x0, y0 = curve[-2]
+            x1, y1 = curve[-1]
+        else:
+            x0, y0, x1, y1 = curve[0][0], curve[0][1], curve[1][0], curve[1][1]
+            for i in range(len(curve) - 1):
+                ax, ay = curve[i]
+                bx, by = curve[i + 1]
+                if ax <= hot_c <= bx:
+                    x0, y0, x1, y1 = ax, ay, bx, by
+                    break
+
+        if abs(x1 - x0) < 1e-6:
+            return float(y0)
+        alpha = (hot_c - x0) / (x1 - x0)
+        return float(y0 + alpha * (y1 - y0))
 
     def _append_hist(self, rack_id: str, item: dict) -> None:
         q = self.rack_history.setdefault(rack_id, deque(maxlen=self.history_limit))
@@ -432,6 +450,13 @@ class DigitalTwinCore:
             return self.virtual_hot[idx], self.virtual_liquid[idx]
         return self.hot[idx], self.liquid[idx]
 
+    @staticmethod
+    def _state_has_valid_sensor(state: Optional["RackState"]) -> bool:
+        if state is None or not state.sensor_ok:
+            return False
+        source = str(state.t_hot_source or "").strip().lower()
+        return source == "sensor"
+
     def _rack_source_info(self, label: str, now: float) -> Tuple[str, float, Optional[float], bool]:
         configured_real = label in self.real_rack_ids
         if not configured_real:
@@ -443,11 +468,13 @@ class DigitalTwinCore:
 
         age = max(0.0, now - state.received_ts)
         if age <= self.stale_seconds:
-            return "real", 0.0, age, True
+            if self._state_has_valid_sensor(state):
+                return "real", 0.0, age, True
+            return "simulated", 1.0, age, True
 
         if self.stale_transition_seconds > 0.0:
             stale_age = age - self.stale_seconds
-            if stale_age <= self.stale_transition_seconds:
+            if stale_age <= self.stale_transition_seconds and self._state_has_valid_sensor(state):
                 blend = stale_age / self.stale_transition_seconds
                 return "stale", blend, age, True
 
@@ -455,7 +482,7 @@ class DigitalTwinCore:
 
     def _anchor_temp(self, rack_id: str, fallback_idx: int, now: float) -> Optional[float]:
         state = self.racks_real.get(rack_id)
-        if state and self._fresh(state.received_ts, now):
+        if state and self._fresh(state.received_ts, now) and self._state_has_valid_sensor(state):
             idx = self._label_to_idx(rack_id)
             if idx is not None and self.virtual_seeded[idx]:
                 return self.virtual_hot[idx]
@@ -476,6 +503,93 @@ class DigitalTwinCore:
         if zone == "B":
             return "R07" in self.real_rack_ids
         return False
+
+    def _grid_pos(self, idx: int) -> Tuple[int, int]:
+        return divmod(idx, self.COLS)
+
+    def _simulated_hot_target(self, idx: int, now: float) -> float:
+        base = self.virtual_ambient_c
+        row, col = self._grid_pos(idx)
+        target = base
+        anchors: List[Tuple[int, float]] = []
+        for rack_id in sorted(self.real_rack_ids):
+            state = self.racks_real.get(rack_id)
+            if state is None or not self._fresh(state.received_ts, now):
+                continue
+            if not self._state_has_valid_sensor(state):
+                continue
+            anchor_idx = self._label_to_idx(rack_id)
+            if anchor_idx is None:
+                continue
+            anchors.append((anchor_idx, float(state.t_hot_real)))
+
+        if not anchors:
+            return clamp(base + 0.4 * math.sin(now * 0.17 + idx), base - 1.0, base + 2.0)
+
+        min_anchor = min(temp for _, temp in anchors)
+        max_anchor = max(temp for _, temp in anchors)
+        for anchor_idx, anchor_hot in anchors:
+            arow, acol = self._grid_pos(anchor_idx)
+            dist = math.hypot(float(row - arow), float(col - acol))
+            weight = 1.0 / (1.0 + 0.6 * dist * dist)
+            # Let nearby simulated racks drift above or below ambient depending
+            # on the closest real rack temperatures, instead of pinning them at
+            # ambient whenever the real racks are cooler than 26 C.
+            target += (anchor_hot - base) * weight
+
+        return clamp(target, min(base, min_anchor), max(base, max_anchor))
+
+    @staticmethod
+    def _zone_rack_id(zone: str) -> Optional[str]:
+        if zone == "A":
+            return "R00"
+        if zone == "B":
+            return "R07"
+        return None
+
+    def _zone_real_state(self, zone: str, now: float) -> Optional["RackState"]:
+        rack_id = self._zone_rack_id(zone)
+        if rack_id is None or rack_id not in self.real_rack_ids:
+            return None
+        state = self.racks_real.get(rack_id)
+        if state is None or not self._fresh(state.received_ts, now):
+            return None
+        if not self._state_has_valid_sensor(state):
+            return None
+        return state
+
+    def _cooling_fan_cmd(self, hot_c: float, anomaly: bool, previous_pwm: int) -> int:
+        # REGRA ABSOLUTA: se temperatura real < 23, fan SEMPRE desligada
+        if hot_c < 23.0:
+            return 0
+        # Emergência: anomalia ou >= 38°C
+        if anomaly or hot_c >= 38.0:
+            return 150
+        # Máximo normal: >= 30°C
+        if hot_c >= 30.0:
+            return 100
+        # Entre 23-30°C: PWM proporcional (50 mínimo, 100 máximo)
+        # 23°C -> 50, 30°C -> 100
+        return clamp_pwm(int(round(50.0 + ((hot_c - 23.0) / 7.0) * 50.0)), 50, 100)
+
+    def _cooling_peltier_cmd(self, hot_c: float, anomaly: bool, previous_pwm: int) -> int:
+        # REGRA ABSOLUTA: se temperatura real < 26.5, Peltier SEMPRE desligado
+        if hot_c < 26.5:
+            return 0
+        # Emergência ou >= 38°C: máximo
+        if anomaly or hot_c >= 38.0:
+            return 255
+        # Entre 26.5-29.9°C: meia intensidade
+        if hot_c < 30.0:
+            return 128
+        # >= 30°C: full
+        return 255
+
+    def _rack_heat_cmd(self, idx: int, now: float) -> int:
+        # Mantem o heater no maximo quase sempre, mas introduz quedas curtas
+        # e desencontradas por rack para criar diferencas termicas entre zonas.
+        phase = (int(now // 4.0) + idx * 2) % 5
+        return 220 if phase == 0 else 255
 
     def _trend(self, now: float) -> float:
         pts = [p for p in self.avg_history if now - p[0] <= 45.0]
@@ -586,7 +700,21 @@ class DigitalTwinCore:
             zone_supply = self.supply_A if zone == "A" else self.supply_B
             zone_fan = fanA_meas if zone == "A" else fanB_meas
             real = self.racks_real.get(label)
-            if real and self._fresh(real.received_ts, now):
+            if real and self._fresh(real.received_ts, now) and not self._state_has_valid_sensor(real):
+                target_hot = self._simulated_hot_target(idx, now)
+                self.hot[idx] = clamp(self.hot[idx] + (target_hot - self.hot[idx]) * 0.65 * dt, 22.0, 50.0)
+                self.liquid[idx] = self._estimate_server_liquid(idx, self.hot[idx], now, self.liquid[idx])
+                self.virtual_hot[idx] = self.hot[idx]
+                self.virtual_liquid[idx] = self.liquid[idx]
+                self.virtual_seeded[idx] = True
+                self.fan[idx] = 0
+                self.heat[idx] = 0
+                self.heater_real_w[idx] = 0.0
+                self.heater_equivalent_w[idx] = 0.0
+                self.heater_scale[idx] = self._heater_scale_factor(self.heater_default_power_w)
+                self.anomaly[idx] = False
+                continue
+            if real and self._fresh(real.received_ts, now) and self._state_has_valid_sensor(real):
                 self.hot[idx] = real.t_hot_real
                 self.liquid[idx] = real.t_liquid_effective
                 self.fan[idx] = real.fan_pwm
@@ -611,12 +739,14 @@ class DigitalTwinCore:
                     measured_liquid=real.t_liquid_real,
                     anchor_strength=anchor_strength,
                 )
-                self.anomaly[idx] = bool(real.anomaly or self.virtual_hot[idx] >= 75.0)
+                thermal_virtual_guard = self.virtual_hot[idx] >= 75.0 and real.t_hot_real >= 26.0
+                self.anomaly[idx] = bool(real.anomaly or thermal_virtual_guard)
                 continue
 
             if not zone_enabled:
-                self.hot[idx] = clamp(self.hot[idx] + (30.0 - self.hot[idx]) * 0.22 * dt, 25.0, 45.0)
-                self.liquid[idx] = clamp(self.hot[idx] - 4.0, 22.0, self.hot[idx] - 0.1)
+                target_hot = self._simulated_hot_target(idx, now)
+                self.hot[idx] = clamp(self.hot[idx] + (target_hot - self.hot[idx]) * 0.55 * dt, 22.0, 45.0)
+                self.liquid[idx] = self._estimate_server_liquid(idx, self.hot[idx], now, self.liquid[idx])
                 self.virtual_hot[idx] = self.hot[idx]
                 self.virtual_liquid[idx] = self.liquid[idx]
                 self.virtual_seeded[idx] = True
@@ -628,25 +758,18 @@ class DigitalTwinCore:
                 self.anomaly[idx] = False
                 continue
 
-            q_heat = self.k_heat * self.heat[idx]
-            q_rej = self.k_zone_fan * (zone_fan / 255.0) * max(0.0, self.hot[idx] - zone_supply)
-            nxt = self.hot[idx] + self.beta_rack * (q_heat - q_rej) * dt + 0.18 * (field - self.hot[idx]) * dt
-            self.hot[idx] = clamp(nxt, 25.0, 95.0)
-            self.liquid[idx] = clamp(self.hot[idx] - (4.4 + 0.8 * math.sin(now * 0.35 + idx)), 22.0, self.hot[idx] - 0.1)
+            target_hot = self._simulated_hot_target(idx, now)
+            self.hot[idx] = clamp(self.hot[idx] + (target_hot - self.hot[idx]) * 0.55 * dt, 22.0, 50.0)
+            self.liquid[idx] = self._estimate_server_liquid(idx, self.hot[idx], now, self.liquid[idx])
             self.fan[idx] = 0
-            self.heat[idx] = clamp_pwm(170 - max(0.0, self.hot[idx] - 55.0) * 3.7, 60, 220)
+            self.heat[idx] = 0
             self.heater_real_w[idx] = 0.0
-            self.heater_equivalent_w[idx] = self.heater_equivalent_target_w * (self.heat[idx] / 255.0)
+            self.heater_equivalent_w[idx] = 0.0
             self.heater_scale[idx] = self._heater_scale_factor(self.heater_default_power_w)
-            self._step_virtual_rack(
-                idx,
-                dt,
-                zone_supply,
-                zone_fan,
-                field,
-                self.heater_equivalent_w[idx],
-            )
-            self.anomaly[idx] = self.hot[idx] >= 75.0
+            self.virtual_hot[idx] = self.hot[idx]
+            self.virtual_liquid[idx] = self.liquid[idx]
+            self.virtual_seeded[idx] = True
+            self.anomaly[idx] = False
 
         effective_hot = []
         effective_liquid = []
@@ -670,34 +793,31 @@ class DigitalTwinCore:
         self.supply_A = clamp(self.supply_A + self.alpha_supply * (qinA - self.k_cool * fanA_meas - peltier_coolA) * dt, 18.0, 45.0)
         self.supply_B = clamp(self.supply_B + self.alpha_supply * (qinB - self.k_cool * fanB_meas - peltier_coolB) * dt, 18.0, 45.0)
 
-        fanA_cmd = clamp_pwm(95 + 5.2 * (maxA - 65.0), 80, 255)
-        fanB_cmd = clamp_pwm(95 + 5.2 * (maxB - 65.0), 80, 255)
+        zoneA_real = self._zone_real_state("A", now)
+        zoneB_real = self._zone_real_state("B", now)
         zoneA_anomaly = self._zone_has_anomaly("A")
         zoneB_anomaly = self._zone_has_anomaly("B")
-        peltierA_cmd = bool(self.cdu_cmd.get("peltierA_on", False))
-        peltierB_cmd = bool(self.cdu_cmd.get("peltierB_on", False))
-        if zoneA_anomaly or maxA >= 72.0:
-            peltierA_cmd = True
-        elif maxA <= 66.0:
-            peltierA_cmd = False
-        if zoneB_anomaly or maxB >= 72.0:
-            peltierB_cmd = True
-        elif maxB <= 66.0:
-            peltierB_cmd = False
-        if max(effective_hot) >= 78.0:
-            fanA_cmd = 255
-            fanB_cmd = 255
-        if maxA >= 80.0:
-            peltierA_cmd = True
-        if maxB >= 80.0:
-            peltierB_cmd = True
-        if not zoneA_enabled:
+        peltierA_cmd = int(self.cdu_cmd.get("peltierA_pwm", 255 if self.cdu_cmd.get("peltierA_on", False) else 0))
+        peltierB_cmd = int(self.cdu_cmd.get("peltierB_pwm", 255 if self.cdu_cmd.get("peltierB_on", False) else 0))
+        fanA_prev = int(self.cdu_cmd.get("fanA_pwm", 0))
+        fanB_prev = int(self.cdu_cmd.get("fanB_pwm", 0))
+        if zoneA_real is not None:
+            fanA_cmd = self._cooling_fan_cmd(zoneA_real.t_hot_real, zoneA_anomaly, fanA_prev)
+            peltierA_cmd = self._cooling_peltier_cmd(zoneA_real.t_hot_real, zoneA_anomaly, peltierA_cmd)
+        else:
             fanA_cmd = 0
-            peltierA_cmd = False
+            peltierA_cmd = 0
+        if zoneB_real is not None:
+            fanB_cmd = self._cooling_fan_cmd(zoneB_real.t_hot_real, zoneB_anomaly, fanB_prev)
+            peltierB_cmd = self._cooling_peltier_cmd(zoneB_real.t_hot_real, zoneB_anomaly, peltierB_cmd)
+        else:
+            fanB_cmd = 0
+            peltierB_cmd = 0
+        if not zoneA_enabled:
+            peltierA_cmd = 0
             self.supply_A = clamp(self.supply_A + (29.0 - self.supply_A) * 0.20 * dt, 18.0, 45.0)
         if not zoneB_enabled:
-            fanB_cmd = 0
-            peltierB_cmd = False
+            peltierB_cmd = 0
             self.supply_B = clamp(self.supply_B + (29.0 - self.supply_B) * 0.20 * dt, 18.0, 45.0)
 
         self.cdu_cmd = {
@@ -705,20 +825,37 @@ class DigitalTwinCore:
             "id": "CDU1",
             "fanA_pwm": fanA_cmd,
             "fanB_pwm": fanB_cmd,
-            "peltierA_on": peltierA_cmd,
-            "peltierB_on": peltierB_cmd,
+            "peltierA_pwm": peltierA_cmd,
+            "peltierB_pwm": peltierB_cmd,
+            "peltierA_on": peltierA_cmd > 0,
+            "peltierB_on": peltierB_cmd > 0,
             "fallback_target": "maintain_supply",
             "t_supply_target": round((self.supply_A + self.supply_B) / 2.0, 2),
         }
 
         for idx in range(self.COUNT):
             label = self._idx_to_label(idx)
+            real = self.racks_real.get(label)
+            sensor_fallback = bool(real and self._fresh(real.received_ts, now) and not self._state_has_valid_sensor(real))
+            if sensor_fallback:
+                self.rack_cmds[label] = {
+                    "type": "rack_cmd",
+                    "id": label,
+                    "fan_local_pwm": 0,
+                    "heat_pwm": 0,
+                    "mode": "sensor_fallback",
+                    "anomaly": False,
+                }
+                continue
+            real_guard_temp = (
+                float(real.t_hot_real)
+                if real and self._fresh(real.received_ts, now) and self._state_has_valid_sensor(real)
+                else float(effective_hot[idx])
+            )
             t = effective_hot[idx]
-            guard = self.anomaly[idx] or t >= 75.0
+            guard = self.anomaly[idx] or real_guard_temp >= 75.0
             fan_cmd = 0
-            heat_cmd = clamp_pwm(180 - 4.5 * (t - 55.0), 60, 220)
-            if guard:
-                heat_cmd = 80
+            heat_cmd = self._rack_heat_cmd(idx, now)
             self.rack_cmds[label] = {
                 "type": "rack_cmd",
                 "id": label,
@@ -738,7 +875,7 @@ class DigitalTwinCore:
         pred5 = max(20.0, avg_hot + trend * 5.0)
 
         power_idx = (fanA_cmd + fanB_cmd) / 510.0
-        peltier_power_kw = 0.0095 * (int(peltierA_cmd) + int(peltierB_cmd))
+        peltier_power_kw = 0.0095 * ((float(peltierA_cmd) + float(peltierB_cmd)) / 255.0)
         power_kw = round(power_idx * 2.4 + peltier_power_kw, 3)
         pdelta, pdelta_ready = self._power_delta(now, power_kw)
 
@@ -773,8 +910,10 @@ class DigitalTwinCore:
             "t_supply_B": round(self.supply_B, 3),
             "fanA_pwm": fanA_cmd,
             "fanB_pwm": fanB_cmd,
-            "peltierA_on": peltierA_cmd,
-            "peltierB_on": peltierB_cmd,
+            "peltierA_pwm": peltierA_cmd,
+            "peltierB_pwm": peltierB_cmd,
+            "peltierA_on": peltierA_cmd > 0,
+            "peltierB_on": peltierB_cmd > 0,
         }
 
     def _legacy_response(self, cmd: dict, avg_hot: float) -> dict:
@@ -869,7 +1008,8 @@ class DigitalTwinCore:
                 telemetry_mode = self._infer_telemetry_mode(t_hot_source, t_liquid_source, sensor_ok)
 
             ai_anom, detector_name = self.detector.detect([t_hot, t_liquid, float(heat_pwm)])
-            anomaly = bool(local_anomaly or ai_anom or t_hot >= self.anomaly_temp_c)
+            ai_guard = bool(ai_anom and t_hot >= 26.0)
+            anomaly = bool(local_anomaly or ai_guard or t_hot >= self.anomaly_temp_c)
 
             with self.lock:
                 self.racks_real[rid] = RackState(
@@ -959,6 +1099,7 @@ class DigitalTwinCore:
             for idx in range(count):
                 label = self._idx_to_label(idx)
                 real = self.racks_real.get(label)
+                valid_real = self._state_has_valid_sensor(real)
                 source_status, source_blend, telemetry_age_s, configured_real = self._rack_source_info(label, now)
                 is_real = source_status == "real"
                 cmd = self.rack_cmds.get(
@@ -972,8 +1113,8 @@ class DigitalTwinCore:
                 )
 
                 simulated_hot, simulated_liq = self._simulated_rack_values(label, idx)
-                last_real_hot = float(real.t_hot_real) if real else None
-                last_real_liq = float(real.t_liquid_real) if real and real.t_liquid_real is not None else None
+                last_real_hot = float(real.t_hot_real) if valid_real and real else None
+                last_real_liq = float(real.t_liquid_real) if valid_real and real and real.t_liquid_real is not None else None
                 if source_status == "real" and real:
                     t_hot = float(real.t_hot_real)
                     t_liq = float(real.t_liquid_effective)
@@ -1004,7 +1145,7 @@ class DigitalTwinCore:
                         "temp_hot_real": round(last_real_hot, 3) if last_real_hot is not None else None,
                         "temp_liquid_real": round(last_real_liq, 3) if last_real_liq is not None else None,
                         "temp_hot_virtual": round(self.virtual_hot[idx], 3),
-                        "temp_liquid_virtual": round(self.virtual_liquid[idx], 3),
+                        "temp_liquid_virtual": round(t_liq, 3),
                         "fan_pwm": fan_pwm,
                         "heat_pwm": heat_pwm,
                         "sensor_ok": bool(real.sensor_ok) if real else False,
@@ -1072,6 +1213,7 @@ class DigitalTwinCore:
                 if idx is None:
                     continue
                 state = self.racks_real.get(rid)
+                valid_real = self._state_has_valid_sensor(state)
                 source_status, source_blend, telemetry_age_s, configured_real = self._rack_source_info(rid, now)
                 sim_hot, sim_liq = self._simulated_rack_values(rid, idx)
                 if state is not None and source_status == "real":
@@ -1096,10 +1238,10 @@ class DigitalTwinCore:
                     "device_ts_ms": state.device_ts_ms if state is not None else None,
                     "t_hot": round(display_hot, 3),
                     "t_liquid": round(display_liq, 3),
-                    "t_hot_real": state.t_hot_real if state is not None else None,
-                    "t_liquid_real": state.t_liquid_real if state is not None else None,
+                    "t_hot_real": state.t_hot_real if valid_real and state is not None else None,
+                    "t_liquid_real": state.t_liquid_real if valid_real and state is not None else None,
                     "t_hot_virtual": self.virtual_hot[idx],
-                    "t_liquid_virtual": self.virtual_liquid[idx],
+                    "t_liquid_virtual": display_liq,
                     "t_hot_source": state.t_hot_source if state is not None else "modeled",
                     "t_liquid_source": state.t_liquid_source if state is not None else "modeled",
                     "telemetry_mode": state.telemetry_mode if state is not None else "modeled",
@@ -1352,13 +1494,27 @@ class WebSocketServices:
             enabled = False
             if self.twin_enabled:
                 await stack.enter_async_context(
-                    ws_serve(self._twin_handler, self.twin_host, self.twin_port, ping_interval=20, ping_timeout=20)
+                    ws_serve(
+                        self._twin_handler,
+                        self.twin_host,
+                        self.twin_port,
+                        ping_interval=20,
+                        ping_timeout=20,
+                        process_request=self._permissive_process_request,
+                    )
                 )
                 safe_log(f"[ws-twin] serving on ws://{self.twin_host}:{self.twin_port}")
                 enabled = True
             if self.edge_enabled:
                 await stack.enter_async_context(
-                    ws_serve(self._edge_handler, self.edge_host, self.edge_port, ping_interval=20, ping_timeout=20)
+                    ws_serve(
+                        self._edge_handler,
+                        self.edge_host,
+                        self.edge_port,
+                        ping_interval=20,
+                        ping_timeout=20,
+                        process_request=self._permissive_process_request,
+                    )
                 )
                 safe_log(f"[ws-edge] serving on ws://{self.edge_host}:{self.edge_port}")
                 enabled = True
@@ -1366,6 +1522,10 @@ class WebSocketServices:
                 return
             while not self.stop_event.is_set():
                 await asyncio.sleep(0.2)
+
+    async def _permissive_process_request(self, connection, request):
+        """Accept WebSocket connections regardless of Connection header value."""
+        return None
 
     async def _twin_handler(self, websocket) -> None:
         try:
@@ -1398,7 +1558,7 @@ def main() -> None:
     parser.add_argument("--contamination", default=0.05, type=float)
     parser.add_argument("--warmup-samples", default=50, type=int)
     parser.add_argument("--real-racks", default="R00,R07", help="comma-separated real rack ids, e.g. R00,R07")
-    parser.add_argument("--heater-equivalent-target-w", default=20.0, type=float, help="virtual heater target power per rack")
+    parser.add_argument("--heater-equivalent-target-w", default=1.44, type=float, help="virtual heater target power per rack; defaults to the real 1.44 W heater")
     parser.add_argument("--heater-default-power-w", default=1.44, type=float, help="default physical heater rated power when rack telemetry omits it")
     parser.add_argument("--virtual-ambient-c", default=26.0, type=float, help="ambient baseline for the virtual rack model")
     parser.add_argument("--anomaly-temp-c", default=80.0, type=float, help="rack anomaly threshold used by the server")

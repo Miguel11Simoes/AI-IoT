@@ -135,6 +135,12 @@ void printPeriodicReport(uint32_t nowMs) {
   }
   Serial.print(" heat=");
   Serial.print(gLastActuation.heatPwm);
+  Serial.print(" sensor_ok=");
+  Serial.print(gLastSensor.sensorOk ? 1 : 0);
+  Serial.print(" hot_src=");
+  Serial.print(temperatureSourceLabel(gLastSensor.hotSource));
+  Serial.print(" liquid_src=");
+  Serial.print(temperatureSourceLabel(gLastSensor.liquidSource));
   Serial.print(" ack=");
   Serial.print(gAckCounter);
   Serial.print(" timeout=");
@@ -178,6 +184,7 @@ void setup() {
 
 void loop() {
   const uint32_t nowMs = millis();
+  gNetwork.service();
   if (gControlReady) {
     gControl.service(nowMs);
   }
@@ -301,14 +308,14 @@ uint32_t gLastCmdMs = 0;
 uint32_t gLastLoopMs = 0;
 uint32_t gCycleCounter = 0;
 
-uint8_t gFanACurrent = 160;
-uint8_t gFanBCurrent = 160;
-uint8_t gFanATarget = 160;
-uint8_t gFanBTarget = 160;
-bool gPeltierACurrent = false;
-bool gPeltierBCurrent = false;
-bool gPeltierATarget = false;
-bool gPeltierBTarget = false;
+uint8_t gFanACurrent = 0;
+uint8_t gFanBCurrent = 0;
+uint8_t gFanATarget = 0;
+uint8_t gFanBTarget = 0;
+uint8_t gPeltierACurrent = 0;
+uint8_t gPeltierBCurrent = 0;
+uint8_t gPeltierATarget = 0;
+uint8_t gPeltierBTarget = 0;
 float gSupplyA = 29.0f;
 float gSupplyB = 30.0f;
 float gSupplyTarget = 29.5f;
@@ -317,38 +324,47 @@ String gPayload;
 String gResponse;
 CduCommandMessage gLastCommand{};
 
-uint8_t applyFan(uint8_t pin, uint8_t current, uint8_t target) {
+void writeFanPwm(uint8_t pin, uint8_t pwm, bool activeLow) {
+  if (!pinAvailable(pin)) {
+    return;
+  }
+  analogWrite(pin, activeLow ? static_cast<uint8_t>(255U - pwm) : pwm);
+}
+
+uint8_t applyFan(uint8_t pin, uint8_t current, uint8_t target, bool activeLow = false) {
   if (!pinAvailable(pin)) {
     return 0;
   }
   const uint8_t next = rampPwm(current, target, 4);
-  analogWrite(pin, next);
+  writeFanPwm(pin, next, activeLow);
   return next;
 }
 
 void applyFans() {
-  gFanACurrent = applyFan(gConfig.fanAPin, gFanACurrent, gFanATarget);
-  gFanBCurrent = applyFan(gConfig.fanBPin, gFanBCurrent, gFanBTarget);
+  gFanACurrent = applyFan(gConfig.fanAPin, gFanACurrent, gFanATarget, false);
+  gFanBCurrent = applyFan(gConfig.fanBPin, gFanBCurrent, gFanBTarget, false);
 }
 
-void writePeltier(uint8_t pin, bool enabled) {
+void writePeltierPwm(uint8_t pin, uint8_t pwm) {
   if (!pinAvailable(pin)) {
     return;
   }
   const bool activeHigh = gConfig.peltierActiveHigh;
-  digitalWrite(pin, (enabled == activeHigh) ? HIGH : LOW);
+  analogWrite(pin, activeHigh ? pwm : static_cast<uint8_t>(255U - pwm));
 }
 
 void applyPeltiers() {
   gPeltierACurrent = gPeltierATarget;
   gPeltierBCurrent = gPeltierBTarget;
-  writePeltier(gConfig.peltierAPin, gPeltierACurrent);
-  writePeltier(gConfig.peltierBPin, gPeltierBCurrent);
+  writePeltierPwm(gConfig.peltierAPin, gPeltierACurrent);
+  writePeltierPwm(gConfig.peltierBPin, gPeltierBCurrent);
+  writePeltierPwm(gConfig.peltierFanAPin, gPeltierACurrent > 0 ? 255 : 0);
+  writePeltierPwm(gConfig.peltierFanBPin, gPeltierBCurrent > 0 ? 255 : 0);
 }
 
 void updateVirtualSupply(float dtSec) {
-  const float peltierBoostA = gPeltierACurrent ? 0.95f : 0.0f;
-  const float peltierBoostB = gPeltierBCurrent ? 0.95f : 0.0f;
+  const float peltierBoostA = (static_cast<float>(gPeltierACurrent) / 255.0f) * 0.95f;
+  const float peltierBoostB = (static_cast<float>(gPeltierBCurrent) / 255.0f) * 0.95f;
   const float coolA = (static_cast<float>(gFanACurrent) / 255.0f) * 1.8f + peltierBoostA;
   const float coolB = (static_cast<float>(gFanBCurrent) / 255.0f) * 1.8f + peltierBoostB;
   const float loadA = 1.3f;
@@ -364,18 +380,18 @@ void applyFallbackIfStale(uint32_t nowMs) {
   if (nowMs - gLastCmdMs <= gConfig.remoteCmdTtlMs) {
     return;
   }
-  const float avgSupply = (gSupplyA + gSupplyB) * 0.5f;
-  const float err = avgSupply - gSupplyTarget;
-  const int correction = static_cast<int>(err * 15.0f);
-  gFanATarget = static_cast<uint8_t>(constrain(160 + correction, 120, 220));
-  gFanBTarget = static_cast<uint8_t>(constrain(160 + correction, 120, 220));
-  gPeltierATarget = gSupplyA >= (gSupplyTarget + 3.0f);
-  gPeltierBTarget = gSupplyB >= (gSupplyTarget + 3.0f);
+  gFanATarget = 0;
+  gFanBTarget = 0;
+  gPeltierATarget = 0;
+  gPeltierBTarget = 0;
 }
 }  // namespace
 
 void setup() {
   Serial.begin(115200);
+  const uint32_t startedAt = millis();
+  while (!Serial && (millis() - startedAt < 3000)) {
+  }
   if (pinAvailable(gConfig.fanAPin)) {
     pinMode(gConfig.fanAPin, OUTPUT);
   }
@@ -388,20 +404,28 @@ void setup() {
   if (pinAvailable(gConfig.peltierBPin)) {
     pinMode(gConfig.peltierBPin, OUTPUT);
   }
+  if (pinAvailable(gConfig.peltierFanAPin)) {
+    pinMode(gConfig.peltierFanAPin, OUTPUT);
+  }
+  if (pinAvailable(gConfig.peltierFanBPin)) {
+    pinMode(gConfig.peltierFanBPin, OUTPUT);
+  }
   if (pinAvailable(gConfig.fanAPin)) {
-    analogWrite(gConfig.fanAPin, gFanACurrent);
+    writeFanPwm(gConfig.fanAPin, gFanACurrent, false);
   } else {
     gFanACurrent = 0;
     gFanATarget = 0;
   }
   if (pinAvailable(gConfig.fanBPin)) {
-    analogWrite(gConfig.fanBPin, gFanBCurrent);
+    writeFanPwm(gConfig.fanBPin, gFanBCurrent, false);
   } else {
     gFanBCurrent = 0;
     gFanBTarget = 0;
   }
-  writePeltier(gConfig.peltierAPin, false);
-  writePeltier(gConfig.peltierBPin, false);
+  writePeltierPwm(gConfig.peltierAPin, 0);
+  writePeltierPwm(gConfig.peltierBPin, 0);
+  writePeltierPwm(gConfig.peltierFanAPin, 0);
+  writePeltierPwm(gConfig.peltierFanBPin, 0);
   gNetwork.begin();
   const uint32_t nowMs = millis();
   gCycleStartedMs = nowMs;
@@ -412,6 +436,7 @@ void setup() {
 
 void loop() {
   const uint32_t nowMs = millis();
+  gNetwork.service();
   uint32_t elapsedMs = nowMs - gLastLoopMs;
   if (elapsedMs == 0 || elapsedMs > 5000U) {
     elapsedMs = 1U;
@@ -433,8 +458,10 @@ void loop() {
       telemetry.cduId = gConfig.cduId;
       telemetry.fanAPwm = gFanACurrent;
       telemetry.fanBPwm = gFanBCurrent;
-      telemetry.peltierAOn = gPeltierACurrent;
-      telemetry.peltierBOn = gPeltierBCurrent;
+      telemetry.peltierAPwm = gPeltierACurrent;
+      telemetry.peltierBPwm = gPeltierBCurrent;
+      telemetry.peltierAOn = gPeltierACurrent > 0;
+      telemetry.peltierBOn = gPeltierBCurrent > 0;
       telemetry.tSupplyA = gSupplyA;
       telemetry.tSupplyB = gSupplyB;
       telemetry.tsMs = nowMs;
@@ -470,8 +497,8 @@ void loop() {
     case CduStateFsm::APPLY_CMD:
       gFanATarget = gLastCommand.fanAPwm;
       gFanBTarget = gLastCommand.fanBPwm;
-      gPeltierATarget = gLastCommand.peltierAOn;
-      gPeltierBTarget = gLastCommand.peltierBOn;
+      gPeltierATarget = gLastCommand.peltierAPwm;
+      gPeltierBTarget = gLastCommand.peltierBPwm;
       if (gLastCommand.hasSupplyTarget && isfinite(gLastCommand.tSupplyTarget)) {
         gSupplyTarget = constrain(gLastCommand.tSupplyTarget, 18.0f, 45.0f);
       }

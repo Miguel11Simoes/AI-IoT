@@ -535,7 +535,7 @@ function updatePanel(payload) {
     const tr = document.createElement("tr");
     const status = rack.status || (rack.anomaly ? "critical" : "normal");
     const displayTempRaw = Number(rack.temp_hot);
-    const virtualTempRaw = Number(rack.temp_hot_virtual ?? rack.temp_hot);
+    const virtualTempRaw = Number(rack.temp_liquid ?? rack.temp_liquid_virtual ?? rack.temp_hot_virtual ?? rack.temp_hot);
     const displayTemp = Number.isFinite(displayTempRaw) ? displayTempRaw : 0;
     const virtualTemp = Number.isFinite(virtualTempRaw) ? virtualTempRaw : displayTemp;
     const width = (tempRatio(virtualTemp) * 100).toFixed(1);
@@ -548,7 +548,7 @@ function updatePanel(payload) {
           ? "live telemetry"
           : "model fallback";
     const realTempLabel = formatTempValue(rack.temp_hot_real);
-    const virtualTempLabel = formatTempValue(rack.temp_hot_virtual);
+    const virtualTempLabel = formatTempValue(rack.temp_liquid ?? rack.temp_liquid_virtual);
     const heaterRealLabel = formatPowerValue(rack.heater_real_w);
     const heaterEqLabel = formatPowerValue(rack.heater_equivalent_w);
     const heaterScale = Number(rack.heater_scale_factor || 1);
@@ -611,8 +611,8 @@ function handleTwinMessage(payload) {
     const slot = rackSlots[rack.rack_id];
     if (!slot) return;
     slot.label = rack.label;
-    slot.targetHot = Number(rack.temp_hot_virtual ?? rack.temp_hot);
-    slot.targetLiquid = Number(rack.temp_liquid_virtual ?? rack.temp_liquid);
+    slot.targetHot = Number(rack.temp_liquid ?? rack.temp_liquid_virtual ?? rack.temp_hot_virtual ?? rack.temp_hot);
+    slot.targetLiquid = Number(rack.temp_liquid ?? rack.temp_liquid_virtual ?? rack.temp_hot);
     slot.targetAnomaly = Boolean(rack.anomaly);
     slot.fanPwm = Number(rack.fan_pwm || 0);
     slot.mode = rack.mode || "n/a";
@@ -792,4 +792,3 @@ loadRuntimeConfig().finally(() => {
   connectWebSocket();
   animate(performance.now());
 });
-

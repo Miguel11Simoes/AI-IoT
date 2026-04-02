@@ -86,11 +86,17 @@ SensorReadout SensorManager::updateSimulated(uint32_t nowMs, uint8_t fanPwm, uin
 
   SensorReadout out{};
   out.tHotC = simulatedHotC_;
-  out.tLiquidC = simulatedLiquidC_;
   out.sensorOk = sensorOkValue;
-  out.liquidAvailable = true;
   out.hotSource = simulatedSource(sensorOkValue);
-  out.liquidSource = simulatedSource(sensorOkValue);
+  if (sensorOkValue) {
+    out.tLiquidC = simulatedLiquidC_;
+    out.liquidAvailable = true;
+    out.liquidSource = simulatedSource(sensorOkValue);
+  } else {
+    out.tLiquidC = 0.0f;
+    out.liquidAvailable = false;
+    out.liquidSource = TemperatureSource::UNAVAILABLE;
+  }
   return out;
 }
 
@@ -109,34 +115,23 @@ SensorReadout SensorManager::updateFromHardware(uint32_t nowMs, uint8_t fanPwm, 
   }
 
   const float hot = dallas_.getTempCByIndex(0);
-  const float liquid = dallas_.getTempCByIndex(1);
 
   dallas_.requestTemperatures();
   conversionReadyAtMs_ = nowMs + kConversionTimeMs;
   conversionPending_ = true;
 
   const bool hotValid = validTemperature(hot);
-  const bool liquidValid = validTemperature(liquid);
   if (hotValid) {
     simulatedHotC_ = hot;
-    if (liquidValid) {
-      simulatedLiquidC_ = liquid;
-    }
-    float liqMin = config_.ambientC - 2.0f;
-    float liqMax = simulatedHotC_ - 0.1f;
-    if (liqMax <= liqMin) {
-      liqMin = liqMax - 0.5f;
-    }
-    simulatedLiquidC_ = clampFloat(simulatedLiquidC_, liqMin, liqMax);
     lastUpdateMs_ = nowMs;
 
     SensorReadout out{};
     out.tHotC = simulatedHotC_;
-    out.tLiquidC = liquidValid ? simulatedLiquidC_ : 0.0f;
+    out.tLiquidC = 0.0f;
     out.sensorOk = true;
-    out.liquidAvailable = liquidValid;
+    out.liquidAvailable = false;
     out.hotSource = TemperatureSource::SENSOR;
-    out.liquidSource = liquidValid ? TemperatureSource::SENSOR : TemperatureSource::UNAVAILABLE;
+    out.liquidSource = TemperatureSource::UNAVAILABLE;
     lastHardwareReadout_ = out;
     haveHardwareReadout_ = true;
     return out;

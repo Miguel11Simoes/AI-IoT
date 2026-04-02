@@ -70,6 +70,8 @@ String encodeCduTelemetryJson(const CduTelemetryMessage& message) {
   doc["id"] = message.cduId;
   doc["fanA_pwm"] = message.fanAPwm;
   doc["fanB_pwm"] = message.fanBPwm;
+  doc["peltierA_pwm"] = message.peltierAPwm;
+  doc["peltierB_pwm"] = message.peltierBPwm;
   doc["peltierA_on"] = message.peltierAOn;
   doc["peltierB_on"] = message.peltierBOn;
   doc["t_supply_A"] = message.tSupplyA;
@@ -91,8 +93,10 @@ bool decodeCduCommandJson(const String& responseLine, CduCommandMessage& outComm
 
   outCommand.fanAPwm = clampByte(doc["fanA_pwm"] | 0);
   outCommand.fanBPwm = clampByte(doc["fanB_pwm"] | 0);
-  outCommand.peltierAOn = doc["peltierA_on"] | false;
-  outCommand.peltierBOn = doc["peltierB_on"] | false;
+  outCommand.peltierAPwm = clampByte(doc["peltierA_pwm"] | ((doc["peltierA_on"] | false) ? 255 : 0));
+  outCommand.peltierBPwm = clampByte(doc["peltierB_pwm"] | ((doc["peltierB_on"] | false) ? 255 : 0));
+  outCommand.peltierAOn = outCommand.peltierAPwm > 0;
+  outCommand.peltierBOn = outCommand.peltierBPwm > 0;
   JsonVariantConst supplyTarget = doc["t_supply_target"];
   outCommand.hasSupplyTarget = !supplyTarget.isNull();
   outCommand.tSupplyTarget = outCommand.hasSupplyTarget ? supplyTarget.as<float>() : 0.0f;

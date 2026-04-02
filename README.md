@@ -1,137 +1,334 @@
-# AI-IoT - Hierarchical Cooperative Cooling Twin
+# AI-IoT - Hierarchical Cooperative Cooling Digital Twin
 
-Arquitetura atual:
+Sistema de arrefecimento cooperativo com controlo distribuído, digital twin 3D e deteção de anomalias por IA.
 
-- `2` racks reais: `R00` e `R07` em `NodeMCU / ESP8266 (ESP-12E)`
-- `6` racks sinteticas no servidor para completar o twin `2x4`
-- `1` CDU em `ESP32-C6` com `fanA`, `fanB`, `peltierA` e `peltierB`
-- `server.py` como coordenador central, digital twin e AI
-- UI 3D em `twin3d/`
+**Data:** 2026-04-02
+**Baseline:** 2 racks reais + 1 CDU + servidor + frontend 3D
 
-## BOM atual
+---
 
-- `2x` NodeMCU / ESP8266 (`board = esp12e`)
-- `1x` ESP32-C6 DevKitC-1
-- `2x` DS18B20
-- `2x` resistencias ceramicas `100 ohm` (`~1.44W @ 12V`)
-- `2x` drivers low-side para os heaters das racks
-- `4x` IRLZ44N no CDU
-- `2x` XL4015 ajustados para `~2.0V`
-- `2x` modulos Peltier
-- `2x` ventoinhas `12V` do CDU (`fanA`, `fanB`)
-- `2x` ventoinhas de dissipador das Peltiers
-- `1x` fonte `12V 5A`
+## Visão Geral
 
-Notas de hardware:
+Sistema IoT que coordena o cooling de um cluster de racks através de:
+- **Racks Reais:** R00 e R07 (ESP8266) com sensores DS18B20 e heaters
+- **CDU (Cooling Distribution Unit):** ESP32-C6 com 2 fans zonais + 2 Peltiers
+- **Servidor Central:** Python (`server.py`) com digital twin 2×4 e AI
+- **Frontend 3D:** Dashboard interativo em tempo real (Three.js)
 
-- as ventoinhas dos dissipadores das Peltiers ligam no mesmo ramo comutado do respetivo Peltier
-- nao existe GPIO nem MOSFET dedicado para `peltier fan`
-- os GPIOs do `ESP32-C6` apenas comandam `fanA`, `fanB`, `peltierA` e `peltierB`
+---
 
-## Topologia runtime
+## Arquitetura
 
-```text
-R00 / R07 (Wi-Fi WS) ----\
-                          +--> server.py (twin + AI + controlo)
-CDU ESP32-C6 (Wi-Fi WS) --/
-
-server.py -> HTTP 8080 + WS twin 8000 + WS edge 8765 + TCP edge 5000
+```
+┌─────────────┐   ┌─────────────┐
+│   Rack R00  │   │   Rack R07  │
+│  (ESP8266)  │   │  (ESP8266)  │
+│  - DS18B20  │   │  - DS18B20  │
+│  - Heater   │   │  - Heater   │
+└─────────────┘   └─────────────┘
+      ↓ WiFi WS          ↓ WiFi WS
+    ┌────────────────────────────┐
+    │  Server (Python)            │
+    │  - Digital Twin 2×4         │
+    │  - AI Anomaly Detection     │
+    │  - Thermal Control Logic    │
+    └────────────────────────────┘
+      ↓ WiFi WS         ↑ WS 8000
+┌─────────────────────┐   ┌──────────────┐
+│  CDU (ESP32-C6)     │   │  Frontend    │
+│  - Fan A / Fan B    │   │  (3D Twin)   │
+│  - Peltier A/B      │   │  - Three.js  │
+│  - Diss Fans A/B    │   └──────────────┘
+└─────────────────────┘
 ```
 
-## Endpoints
+---
 
-- `TCP edge`: `5000`
-- `WS twin`: `8000`
-- `WS edge`: `8765`
-- `HTTP UI/API`: `8080`
+## Hardware (BOM Resumido)
 
-## Servidor
+| Componente | Quantidade | Função |
+|------------|------------|--------|
+| NodeMCU ESP8266 | 2 | Racks R00, R07 |
+| ESP32-C6 DevKitC-1 | 1 | CDU |
+| DS18B20 | 2 | Sensores temperatura |
+| Resistência 100Ω | 2 | Heaters (1.44W @ 12V) |
+| Módulo PWM Fan 5V | 2 | Fans zonais A e B |
+| Peltier TEC1-12706 | 2 | Cooling termoelétrico |
+| XL4015 Buck | 2 | 12V → 2V para Peltiers |
+| IRLZ44N MOSFET | 8 | Switches low-side |
+| Ventoinha 12V | 2 | Dissipadores Peltiers |
+| PSU 12V 5A | 1 | Alimentação principal |
 
-Arranque normal com as duas racks reais:
+**Detalhes:** Ver [`docs/guia-hardware.md`](docs/guia-hardware.md)
 
+---
+
+## Quick Start
+
+### 1. Configurar WiFi e Servidor
+
+Editar `platformio.ini`:
+```ini
+-DWIFI_SSID=\"SuaRedeWiFi\"
+-DWIFI_PASSWORD=\"SuaSenha\"
+-DSERVER_HOST=\"192.168.1.100\"
+```
+
+### 2. Build e Upload do Firmware
+
+**Racks:**
 ```bash
-python server.py --host 0.0.0.0 --port 5000 --ui-port 8080 --ws-port 8000 --edge-ws-port 8765 --detector zscore --real-racks R00,R07
+platformio run -e rack_r00 -t upload
+platformio run -e rack_r07 -t upload
 ```
 
-Fallback temporario para uma rack apenas:
-
+**CDU:**
 ```bash
-python server.py --host 0.0.0.0 --port 5000 --ui-port 8080 --ws-port 8000 --edge-ws-port 8765 --detector zscore --real-racks R00
+platformio run -e cdu_esp32c6 -t upload
 ```
 
-Dashboard:
-
-```text
-http://127.0.0.1:8080/twin3d/index.html
-```
-
-## Firmware e build
-
-Targets PlatformIO:
-
-- `rack_r00`
-- `rack_r07`
-- `cdu_esp32c6`
-
-Build dos racks:
-
-```bash
-platformio run -e rack_r00
-platformio run -e rack_r07
-```
-
-Build do CDU com cache isolada:
-
+Ou usar o script automatizado:
 ```powershell
-$env:PLATFORMIO_PACKAGES_DIR = "$PWD\\.pio-cdu-packages"
-platformio run -e cdu_esp32c6
+.\tools\stage_build.ps1 upload -RackR00Port COM3 -RackR07Port COM5 -CduPort COM4
 ```
 
-Ou:
+### 3. Arrancar o Servidor
 
-```powershell
-.\tools\cdu_build.ps1 build
+```bash
+python server.py --real-racks R00,R07
 ```
 
-Build completo do deployment atual:
+Argumentos opcionais:
+- `--host 0.0.0.0` - bind address
+- `--port 5000` - TCP edge (racks/CDU)
+- `--ui-port 8080` - HTTP UI/API
+- `--ws-port 8000` - WebSocket twin (frontend)
+- `--edge-ws-port 8765` - WebSocket edge (firmware)
+- `--detector zscore` - modo deteção anomalias (zscore|iforest)
+
+### 4. Abrir Dashboard
+
+```
+http://localhost:8080
+```
+
+---
+
+## Endpoints do Servidor
+
+| Serviço | Porto | Protocolo | Função |
+|---------|-------|-----------|--------|
+| TCP Edge | 5000 | TCP | Telemetria legacy |
+| WS Edge | 8765 | WebSocket | Telemetria racks/CDU |
+| WS Twin | 8000 | WebSocket | Stream frontend |
+| HTTP API | 8080 | HTTP | Dashboard + REST API |
+
+### API REST
+
+| Endpoint | Descrição |
+|----------|-----------|
+| `GET /api/health` | Health check |
+| `GET /api/state` | Snapshot completo do sistema |
+| `GET /api/twin?racks=8` | Estado do digital twin |
+| `GET /api/history?rack=R00&points=120` | Histórico rack |
+| `GET /api/config` | Configuração do servidor |
+
+---
+
+## Controlo Térmico
+
+### Fans Zonais (CDU)
+
+Controladas por temperatura `t_hot` das racks da zona:
+
+| Temperatura | PWM | Comportamento |
+|-------------|-----|---------------|
+| < 23.0°C | 0 | Desligada |
+| 23.0°C | 50 | Mínimo |
+| 26.0°C | ~71 | Proporcional |
+| ≥ 30.0°C | 100 | Máximo normal |
+| ≥ 38.0°C | 150 | Emergência |
+
+**Zonas:**
+- **Zona A:** R00 → Fan A (GPIO10)
+- **Zona B:** R07 → Fan B (GPIO7)
+
+### Peltiers (CDU)
+
+| Temperatura | PWM | Comportamento |
+|-------------|-----|---------------|
+| < 26.5°C | 0 | Desligado |
+| 26.5-29.9°C | 128 | Meia intensidade |
+| ≥ 30.0°C | 255 | Máximo |
+| ≥ 38.0°C | 255 | Emergência |
+
+---
+
+## Estrutura do Projeto
+
+```
+AI-IoT/
+├── src/
+│   └── main.cpp              # Entry point (rack/CDU via build flags)
+├── lib/
+│   ├── control/              # PID, PWM, time-proportioning
+│   ├── network/              # WiFi, WebSocket client
+│   ├── protocol/             # JSON telemetry encoding
+│   └── sensors/              # DS18B20, virtual sensors
+├── include/
+│   └── ProjectConfig.h       # Configuração global
+├── platformio.ini            # Build configs (rack_r00, rack_r07, cdu_esp32c6)
+├── server.py                 # Servidor central (twin + AI)
+├── twin3d/
+│   ├── index.html            # Frontend 3D
+│   ├── main.js               # Three.js logic
+│   └── style.css
+├── tools/
+│   ├── stage_build.ps1       # Script build/upload completo
+│   └── cdu_build.ps1         # Script build CDU isolado
+└── docs/
+    ├── relatorio-codigo.md   # Documentação completa do código
+    └── guia-hardware.md      # Guia de montagem e pinout
+```
+
+---
+
+## Firmware - Pinout
+
+### Racks (ESP8266)
+- **GPIO4:** DS18B20 DQ (OneWire)
+- **GPIO5:** Heater (MOSFET gate)
+
+### CDU (ESP32-C6)
+- **GPIO10:** Fan A (módulo PWM 5V)
+- **GPIO7:** Fan B (módulo PWM 5V)
+- **GPIO4:** Peltier A (MOSFET gate)
+- **GPIO5:** Peltier B (MOSFET gate)
+- **GPIO18:** Ventoinha Dissipador A (MOSFET gate)
+- **GPIO19:** Ventoinha Dissipador B (MOSFET gate)
+
+---
+
+## Digital Twin
+
+O servidor mantém um **twin 2×4** (8 racks):
+- **2 racks reais:** R00, R07 (telemetria física)
+- **6 racks virtuais:** R01-R06 (modelo térmico)
+
+### Estados de Racks
+
+| Estado | Condição | Fonte de Dados |
+|--------|----------|----------------|
+| **real** | telemetria < 8s | Sensor físico |
+| **stale** | 8s < telemetria < 12s | Blend real → virtual |
+| **simulated** | telemetria > 12s | Modelo virtual |
+
+### Deteção de Anomalias
+
+**Modos disponíveis:**
+- `zscore` (padrão): z-score > 3.2 em features [t_hot, t_liquid, heat_pwm]
+- `iforest`: Isolation Forest (requer `numpy` + `scikit-learn`)
+
+**Ação em anomalia:**
+- Se `t_hot >= 26°C` → fan = 150 PWM (emergência)
+- Se `t_hot < 26°C` → anomalia ignorada (falso positivo)
+
+---
+
+## Desenvolvimento
+
+### Dependências Python
+
+```bash
+pip install websockets
+pip install numpy scikit-learn  # opcional, para iforest
+```
+
+### Build Completo
 
 ```powershell
 .\tools\stage_build.ps1 build
 ```
 
-Upload:
+### Upload Seletivo
 
-```powershell
-.\tools\stage_build.ps1 upload -RackR00Port COM3 -RackR07Port COM5 -CduPort COM4
+```bash
+platformio run -e rack_r00 -t upload
+platformio run -e cdu_esp32c6 -t upload --upload-port COM4
 ```
 
-## Pinout de referencia
+### Monitor Serial
 
-Racks:
+```bash
+platformio device monitor -e rack_r00
+```
 
-- `GPIO4` -> `DS18B20 DQ`
-- `GPIO5` -> driver do heater
+---
 
-CDU:
+## Troubleshooting
 
-- `GPIO6` -> `fanA`
-- `GPIO7` -> `fanB`
-- `GPIO18` -> `peltierA`
-- `GPIO19` -> `peltierB`
+### Racks não conectam ao servidor
+- Verificar SSID/password em `platformio.ini`
+- Verificar `SERVER_HOST` correto (IP do PC onde corre `server.py`)
+- Confirmar que servidor está a correr: `python server.py`
 
-## Modelo de dados
+### DS18B20 retorna -127°C
+- Pull-up 4.7kΩ em falta (entre VDD e DQ)
+- Sensor mal conectado
+- GPIO errado (deve ser GPIO4)
 
-- a rack envia apenas telemetria real: `t_hot_real`, `heater_on`, `heat_pwm`, `sensor_ok`
-- se houver segunda sonda, pode tambem enviar `t_liquid_real`
-- o servidor estima `t_liquid` quando ela nao existe
-- o servidor calcula `heater_real_w`, `heater_equivalent_w` e `t_virtual`
-- se uma rack desaparecer, o servidor transita `real -> stale -> simulated`
+### Fans não ligam
+- Verificar alimentação: **5V** (não 12V!)
+- Confirmar GPIOs: Fan A = GPIO10, Fan B = GPIO7
+- Verificar temperatura: fans só ligam se `t_hot >= 23°C`
 
-## Checklist rapido
+### Peltier sobreaquece
+- XL4015 ajustado para tensão muito alta (deve ser ~2.0V)
+- Verificar ventoinhas dos dissipadores (GPIO18/19)
+- Desligar imediatamente se demasiado quente
 
-- preencher `WIFI_SSID`, `WIFI_PASSWORD` e `SERVER_HOST` em `platformio.ini`
-- confirmar `HEATER_RATED_POWER_W=1.44` para as resistencias `100 ohm @ 12V`
-- confirmar `GPIO4` e `GPIO5` nas duas racks
-- confirmar `GPIO6`, `GPIO7`, `GPIO18` e `GPIO19` no CDU
-- ajustar os dois `XL4015` para `~2.0V` antes de ligar os Peltiers
-- garantir `GND` comum entre PSU, racks, CDU e drivers
+---
+
+## Documentação Completa
+
+- **[Relatório de Código](docs/relatorio-codigo.md)** - Arquitetura software detalhada
+- **[Guia de Hardware](docs/guia-hardware.md)** - Pinout, BOM, montagem e troubleshooting
+
+---
+
+## Estado Atual (2026-04-02)
+
+### ✅ Implementado
+- [x] 2 racks reais (R00, R07) com telemetria funcional
+- [x] CDU com 2 fans zonais + 2 Peltiers + 2 ventoinhas dissipadores
+- [x] Servidor com digital twin 2×4 e controlo térmico
+- [x] Frontend 3D com visualização em tempo real
+- [x] Deteção de anomalias (zscore/iforest)
+- [x] Estimação de `t_liquid` quando sensor indisponível
+- [x] Controlo de fans: PWM 0-100 (threshold 23°C)
+- [x] Controlo de Peltiers: PWM 0/128/255 (threshold 26.5°C)
+- [x] Fallback automático: real → stale → simulated
+
+### 🔧 Próximos Passos
+- [ ] Calibração fina dos thresholds térmicos em ambiente real
+- [ ] Tuning dos coeficientes do modelo virtual
+- [ ] Logging de métricas para análise offline (CSV/InfluxDB)
+- [ ] Dashboard de eficiência energética
+
+---
+
+## Licença
+
+[Especificar licença se aplicável]
+
+---
+
+## Contactos
+
+**Projeto:** AI-IoT Cooperative Cooling Twin
+**Instituição:** [Universidade/Empresa]
+**Data:** 2026-04-02
+
+---
+
+**Desenvolvido com:** PlatformIO, Arduino Framework, Python, Three.js

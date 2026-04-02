@@ -25,6 +25,7 @@ class EdgeNetworkManager {
   explicit EdgeNetworkManager(const Config& config);
 
   void begin();
+  void service();
   bool ready() const;
   bool linkUp() const;
   bool startRequest(const String& payloadLine);
@@ -47,7 +48,11 @@ class EdgeNetworkManager {
   bool requestActive_;
   uint32_t requestStartedMs_;
   uint32_t lastWifiAttemptMs_;
+  uint32_t wifiConnectStartedMs_;
   uint32_t lastWsBeginMs_;
+  bool wifiConnectPending_;
+  uint32_t wsConnectStartedMs_;
+  bool wsConnectPending_;
 
   String rxQueue_[kQueueSize];
   uint8_t rxHead_;

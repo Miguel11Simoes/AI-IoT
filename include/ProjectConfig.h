@@ -114,6 +114,12 @@
 #ifndef CDU_PELTIER_B_PIN
 #define CDU_PELTIER_B_PIN 255
 #endif
+#ifndef CDU_PELTIER_FAN_A_PIN
+#define CDU_PELTIER_FAN_A_PIN 255
+#endif
+#ifndef CDU_PELTIER_FAN_B_PIN
+#define CDU_PELTIER_FAN_B_PIN 255
+#endif
 #ifndef CDU_PELTIER_ACTIVE_HIGH
 #define CDU_PELTIER_ACTIVE_HIGH 1
 #endif
@@ -188,6 +194,8 @@ struct CduConfig {
   uint8_t fanBPin;
   uint8_t peltierAPin;
   uint8_t peltierBPin;
+  uint8_t peltierFanAPin;
+  uint8_t peltierFanBPin;
   bool peltierActiveHigh;
   uint32_t cycleIntervalMs;
   uint32_t networkTimeoutMs;
@@ -207,6 +215,8 @@ inline CduConfig loadCduConfig() {
   cfg.fanBPin = static_cast<uint8_t>(CDU_FAN_B_PIN);
   cfg.peltierAPin = static_cast<uint8_t>(CDU_PELTIER_A_PIN);
   cfg.peltierBPin = static_cast<uint8_t>(CDU_PELTIER_B_PIN);
+  cfg.peltierFanAPin = static_cast<uint8_t>(CDU_PELTIER_FAN_A_PIN);
+  cfg.peltierFanBPin = static_cast<uint8_t>(CDU_PELTIER_FAN_B_PIN);
   cfg.peltierActiveHigh = (CDU_PELTIER_ACTIVE_HIGH != 0);
   cfg.cycleIntervalMs = static_cast<uint32_t>(CYCLE_INTERVAL_MS);
   cfg.networkTimeoutMs = static_cast<uint32_t>(NETWORK_TIMEOUT_MS);
