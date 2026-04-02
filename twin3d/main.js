@@ -445,14 +445,48 @@ function compactMode(mode) {
   return text.replaceAll("_", " ");
 }
 
+function getVirtualClusterMetrics(payload) {
+  const racks = Array.isArray(payload?.racks) ? payload.racks : [];
+  const samples = racks
+    .map((rack) => ({
+      label: String(rack.label || ""),
+      temp: Number(rack.temp_liquid ?? rack.temp_liquid_virtual ?? rack.temp_hot_virtual ?? rack.temp_hot),
+    }))
+    .filter((sample) => sample.label && Number.isFinite(sample.temp));
+
+  if (!samples.length) {
+    const g = payload?.global || {};
+    return {
+      avg: Number(g.avg_hot || 0),
+      max: Number(g.max_hot || 0),
+      criticalRack: String(g.critical_rack || ""),
+      criticalTemp: Number(g.critical_temp || 0),
+    };
+  }
+
+  let total = 0;
+  let critical = samples[0];
+  samples.forEach((sample) => {
+    total += sample.temp;
+    if (sample.temp > critical.temp) critical = sample;
+  });
+
+  return {
+    avg: total / samples.length,
+    max: critical.temp,
+    criticalRack: critical.label,
+    criticalTemp: critical.temp,
+  };
+}
+
 function updatePanel(payload) {
   if (!payload || !payload.global || !payload.racks) return;
   const g = payload.global;
   const cdu = payload.cdu || {};
-
-  const avgHot = Number(g.avg_hot || 0);
-  const maxHot = Number(g.max_hot || 0);
-  const criticalTemp = Number(g.critical_temp || 0);
+  const cluster = getVirtualClusterMetrics(payload);
+  const avgHot = cluster.avg;
+  const maxHot = cluster.max;
+  const criticalTemp = cluster.criticalTemp;
   const totalPower = Number(g.total_cooling_power_kw ?? g.power_index_kw ?? 0);
   const powerDeltaPct = Number(g.power_delta_pct_1h ?? 0);
   const powerDeltaReady = Boolean(g.power_delta_ready);
@@ -474,7 +508,7 @@ function updatePanel(payload) {
 
   kpiAvg.textContent = `${avgHot.toFixed(2)}\u00B0C`;
   kpiMax.textContent = `${maxHot.toFixed(2)}\u00B0C`;
-  kpiCritical.textContent = `${g.critical_rack} (${criticalTemp.toFixed(1)}\u00B0C)`;
+  kpiCritical.textContent = `${cluster.criticalRack} (${criticalTemp.toFixed(1)}\u00B0C)`;
   kpiPower.textContent = `${totalPower.toFixed(2)} kW`;
   if (kpiPowerDelta) {
     if (powerDeltaReady) {
@@ -604,7 +638,7 @@ function updatePanel(payload) {
 }
 
 function handleTwinMessage(payload) {
-  criticalRackLabel = String(payload?.global?.critical_rack || "");
+  criticalRackLabel = getVirtualClusterMetrics(payload).criticalRack;
   updatePanel(payload);
   if (!Array.isArray(payload?.racks)) return;
   payload.racks.forEach((rack) => {

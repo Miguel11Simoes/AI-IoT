@@ -10,6 +10,7 @@ import socket
 import statistics
 import threading
 import time
+import os
 from collections import deque
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -18,15 +19,23 @@ from pathlib import Path
 from typing import Deque, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
-try:
-    import numpy as np  # type: ignore
-except ImportError:  # pragma: no cover
-    np = None
+np = None
+IsolationForest = None
 
-try:
-    from sklearn.ensemble import IsolationForest  # type: ignore
-except ImportError:  # pragma: no cover
-    IsolationForest = None
+def _try_import_ai() -> None:
+    global np, IsolationForest
+    if os.environ.get("AI_DISABLE_NUMPY", "0") == "1":
+        return
+    if np is not None or IsolationForest is not None:
+        return
+    try:
+        import numpy as _np  # type: ignore
+        from sklearn.ensemble import IsolationForest as _IsolationForest  # type: ignore
+        np = _np
+        IsolationForest = _IsolationForest
+    except Exception:
+        np = None
+        IsolationForest = None
 
 try:
     from websockets.asyncio.server import serve as ws_serve  # type: ignore
@@ -100,6 +109,8 @@ class AnomalyDetector:
         self.model = None
         self.model_ready = False
         self.training = False
+        if detector_mode == "iforest":
+            _try_import_ai()
         self.ai_enabled = detector_mode == "iforest" and IsolationForest is not None and np is not None
 
     def detect(self, features: List[float]) -> Tuple[bool, str]:
