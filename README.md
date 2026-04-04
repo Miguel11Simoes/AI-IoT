@@ -315,18 +315,9 @@ platformio device monitor -e rack_r00
 - [ ] Logging de métricas para análise offline (CSV/InfluxDB)
 - [ ] Dashboard de eficiência energética
 
----
-
-## Licença
-
-[Especificar licença se aplicável]
-
----
-
-## Contactos
 
 **Projeto:** AI-IoT Cooperative Cooling Twin
-**Instituição:** [Universidade/Empresa]
+**Instituição:** [Instituto Superior Técnico]
 **Data:** 2026-04-02
 
 ---
