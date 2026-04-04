@@ -57,7 +57,7 @@ O código está organizado em três componentes principais:
 
 ### 2.3 Modos de Operação
 1. **Measured:** Sensor OK → envia `t_hot_real` medido
-2. **Sensor Fallback:** Sensor falha → servidor comanda heater = 0
+2. **Sensor Fallback:** Sensor falha → a rack sinaliza `local_anomaly` e corta localmente o heater
 3. **Simulated:** Desenvolvimento sem hardware
 
 ---
@@ -76,19 +76,19 @@ O código está organizado em três componentes principais:
 ### 3.2 Lógica de Controlo
 
 #### Fans Zonais (A e B)
-- **PWM range:** 0-255 (mapeado para 0-100 no servidor)
-- **Frequência PWM:** 25 kHz
+- **PWM range no firmware:** 0-255
+- **Comando do servidor:** 0-100 em regime normal, 150 em emergência
 - **Threshold de ativação:** t_hot ≥ 23.0°C
 - **Threshold de desativação:** t_hot < 23.0°C
 
 #### Peltiers (A e B)
-- **Controlo:** ON/OFF via PWM (0 ou 128 ou 255)
+- **Controlo no firmware:** PWM 0-255
+- **Patamares usados pelo servidor:** 0 / 128 / 255
 - **Threshold de ativação:** t_hot ≥ 26.5°C
 - **Alimentação:** XL4015 ajustado para ~2.0V
-- **Potência nominal:** 9.5W por Peltier @ PWM=255
 
 #### Ventoinhas dos Dissipadores
-- Controladas independentemente via GPIO18/19
+- Acionadas pelo firmware via GPIO18/19
 - Ligam automaticamente quando o respetivo Peltier ativa
 
 ### 3.3 Telemetria Enviada
@@ -98,6 +98,8 @@ O código está organizado em três componentes principais:
   "id": "CDU1",
   "fanA_pwm": 75,
   "fanB_pwm": 0,
+  "peltierA_pwm": 128,
+  "peltierB_pwm": 0,
   "peltierA_on": true,
   "peltierB_on": false,
   "t_supply_A": 28.5,
@@ -114,7 +116,8 @@ O código está organizado em três componentes principais:
   "peltierA_pwm": 128,
   "peltierB_pwm": 0,
   "peltierA_on": true,
-  "peltierB_on": false
+  "peltierB_on": false,
+  "t_supply_target": 29.5
 }
 ```
 
@@ -219,9 +222,14 @@ supply_B = supply_B + (q_heat_B - q_fan_B - q_peltier_B) * dt
 
 #### Lógica de Guard
 ```python
-# Anomalia só afeta fans/Peltiers se t_hot >= 26°C
+# Guard primário na receção da telemetria real
+ai_anom, detector = detector.detect([t_hot, t_liquid, heat_pwm])
+ai_guard = ai_anom and (t_hot >= 26.0)
+anomaly = local_anomaly or ai_guard or (t_hot >= 80.0)
+
+# Guard secundário durante a atualização do modelo virtual
 thermal_virtual_guard = (virtual_hot >= 75.0) and (t_hot_real >= 26.0)
-anomaly = local_anomaly or thermal_virtual_guard or (t_hot >= 80.0)
+rack_anomaly = real.anomaly or thermal_virtual_guard
 ```
 
 ### 4.5 Fallback de Racks
@@ -260,12 +268,14 @@ scale = heater_target_w / heater_rated_power_w
 heater_equivalent_w = heater_real_w * scale
 ```
 
-#### Potência de Cooling
+#### Métrica Agregada de Cooling
 ```python
-power_fans = (fanA_pwm + fanB_pwm) / 510.0 * 2.4  # kW
-power_peltiers = (peltierA_pwm + peltierB_pwm) / 255.0 * 0.0095  # kW
-total_cooling_kw = power_fans + power_peltiers
+power_index = (fanA_pwm + fanB_pwm) / 510.0
+peltier_factor = (peltierA_pwm + peltierB_pwm) / 255.0
+cooling_metric = power_index * 2.4 + peltier_factor * 0.0095
 ```
+
+Os campos `total_cooling_power_kw` e `power_index_kw` expostos pelo dashboard usam esta métrica agregada do servidor; não correspondem a uma medição elétrica direta em tempo real.
 
 ---
 
@@ -310,7 +320,7 @@ build_flags =
 **CDU:**
 ```ini
 [env:cdu_esp32c6]
-platform = espressif32
+platform = https://github.com/pioarduino/platform-espressif32.git#55.03.37
 board = esp32-c6-devkitc-1
 build_flags =
   -DCDU_FAN_A_PIN=10
@@ -345,10 +355,13 @@ python server.py --real-racks R00,R07
 ```
 
 **Argumentos principais:**
-- `--host 0.0.0.0` - bind HTTP/TCP
+- `--host 0.0.0.0` - bind do TCP edge
 - `--port 5000` - TCP edge
+- `--ui-host 0.0.0.0` - bind HTTP UI
 - `--ui-port 8080` - HTTP UI
+- `--ws-host 0.0.0.0` - bind WS twin
 - `--ws-port 8000` - WS twin
+- `--edge-ws-host 0.0.0.0` - bind WS edge
 - `--edge-ws-port 8765` - WS edge (para firmware)
 - `--detector zscore` - modo de deteção
 - `--real-racks R00,R07` - racks reais esperadas
@@ -397,9 +410,9 @@ python server.py --real-racks R00,R07
 ### 8.1 Deployment Baseline
 - ✅ 2 racks reais (R00, R07)
 - ✅ 1 CDU (ESP32-C6)
-- ✅ 2 fans zonais (A, B) com PWM 0-100
+- ✅ 2 fans zonais (A, B) com PWM 0-100 nominal e 150 em emergência
 - ✅ 2 Peltiers (A, B) com PWM 0/128/255
-- ✅ 2 ventoinhas dos dissipadores (controladas independentemente)
+- ✅ 2 ventoinhas dos dissipadores (acionadas automaticamente com os Peltiers)
 - ✅ Servidor com twin 2x4
 - ✅ Frontend 3D funcional
 - ✅ Deteção de anomalias zscore
@@ -452,7 +465,7 @@ AI-IoT/
 ├── src/
 │   └── main.cpp           # Entry point (rack/CDU selecionado por build_flags)
 ├── lib/
-│   ├── control/           # Controlo PID, PWM, time-proportioning
+│   ├── control/           # Controlo térmico local, PWM, time-proportioning
 │   ├── network/           # WiFi, WebSocket
 │   ├── protocol/          # JSON encoding/decoding
 │   └── sensors/           # DS18B20, sensores virtuais

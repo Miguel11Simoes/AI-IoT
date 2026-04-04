@@ -30,8 +30,9 @@
 - **2x MOSFET IRLZ44N** (low-side switch para ventoinhas dos dissipadores)
 
 ### 1.4 Resistores e Componentes Passivos
-- **8x resistor 100Ω** (proteção de gates dos MOSFETs)
-- **8x resistor 12kΩ** (pull-down para gates dos MOSFETs)
+- **6x resistor 100Ω** (proteção de gates dos 6 MOSFETs do sistema)
+- **6x resistor 12kΩ** (pull-down para gates dos 6 MOSFETs)
+- As fans zonais A e B usam módulos PWM 5V e não precisam destes resistores de gate
 - Fios, breadboard/PCB, conectores
 
 ### 1.5 Alimentação
@@ -178,14 +179,16 @@ XL4015-B: 12V IN → ~2.0V OUT → Peltier B
 
 ---
 
-## 4. Esquema de Controlo Low-Side
+## 4. Esquema de Controlo
 
-Todos os atuadores usam **MOSFET low-side switching**:
+### 4.1 Cargas com MOSFET Low-Side
+
+Os **heaters**, os **Peltiers** e as **ventoinhas dos dissipadores** usam **MOSFET low-side switching**:
 
 ```
-+V_power (12V ou 5V)
++V_power (12V)
    ↓
-[Carga: heater/fan/Peltier]
+[Carga: heater/Peltier/ventoinha dissipador]
    ↓
 Drain ← [MOSFET IRLZ44N] → Source
            ↑ Gate           ↓
@@ -200,6 +203,16 @@ Drain ← [MOSFET IRLZ44N] → Source
 - GPIO HIGH → MOSFET ON → carga ativa
 - GPIO LOW → MOSFET OFF → carga desligada
 
+### 4.2 Fans Zonais com Módulo PWM
+
+As **fans zonais A e B** não usam MOSFET low-side no baseline atual. Elas são alimentadas a **5V** por um módulo PWM dedicado e recebem apenas o sinal de controlo do ESP32-C6:
+
+```
++5V rail → Módulo PWM fan VCC
+GND rail → Módulo PWM fan GND
+ESP32-C6 GPIO → Módulo PWM fan S
+```
+
 ---
 
 ## 5. Checklist de Montagem
@@ -208,8 +221,8 @@ Drain ← [MOSFET IRLZ44N] → Source
 
 - [ ] Todos os GND estão conectados num ponto comum
 - [ ] Pull-ups 4.7kΩ instalados nos DS18B20
-- [ ] Pull-downs 12kΩ instalados em todos os gates dos MOSFETs
-- [ ] Resistores de proteção 100Ω em série com todos os gates
+- [ ] Pull-downs 12kΩ instalados nos 6 gates dos MOSFETs
+- [ ] Resistores de proteção 100Ω em série nos 6 gates dos MOSFETs
 - [ ] XL4015 ajustados para ~2.0V (verificar com multímetro)
 - [ ] Fans zonais A e B alimentadas a **5V**, não 12V
 - [ ] Peltiers desconectados durante ajuste dos XL4015
@@ -230,7 +243,7 @@ Drain ← [MOSFET IRLZ44N] → Source
 5. Ligar PSU 12V
 6. Verificar no monitor serial que as racks conectam ao servidor
 7. Verificar no dashboard 3D que as temperaturas são lidas
-8. Testar comando manual das fans (via API REST se necessário)
+8. Verificar em `/api/state` ou no dashboard que `fanA_pwm`, `fanB_pwm`, `peltierA_on` e `peltierB_on` reagem ao aquecimento
 
 ---
 
